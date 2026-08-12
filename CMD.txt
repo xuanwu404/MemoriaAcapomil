@@ -1,9 +1,24 @@
-cd C:\Users\Xuanwu\Desktop\MiProyecto
+
+#######################
+###Ejecutar Proyecto###
+#######################
+
+cd D:/MemoriaAcapomil
 
 streamlit run frontend/app.py
+
+#################
+###Cuentas Web###
+#################
 
 msotoa@acapomil.cl
 123
 
 admin
 admin123
+
+#######################
+###Guardar en GITHUB###
+#######################
+
+cd D:/MemoriaAcapomil; git add .; git commit -m "Actualización del proyecto"; git push
