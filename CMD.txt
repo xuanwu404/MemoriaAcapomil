@@ -1,0 +1,9 @@
+cd C:\Users\Xuanwu\Desktop\MiProyecto
+
+streamlit run frontend/app.py
+
+msotoa@acapomil.cl
+123
+
+admin
+admin123
