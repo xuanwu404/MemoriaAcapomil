@@ -3,9 +3,7 @@
 ###Ejecutar Proyecto###
 #######################
 
-cd D:/MemoriaAcapomil
-
-streamlit run frontend/app.py
+cd D:/MemoriaAcapomil; streamlit run frontend/app.py
 
 #################
 ###Cuentas Web###

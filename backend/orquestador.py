@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 import os
 
+import numpy as np
+if not hasattr(np, "float_"):
+	np.float_ = np.float64
+
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -78,33 +82,36 @@ def _asegurar_retrieval_disponible() -> None:
 		ingest_arreglo_doctrina()
 
 
-def _recuperar_contexto_por_indicador(indicador: str, tau: float) -> ContextoRefuerzo:
-	consulta = (
-		"Refuerzo doctrinario para mejorar el indicador "
-		f"{indicador} en evaluacion por competencias."
-	)
-	resultados = recuperar_fragmentos_relevantes(
-		pregunta=consulta,
-		tau=tau,
-		k=4,
-	)
+def _recuperar_contexto_por_indicador(indicador: str, tau: float, unidad_id: str = None) -> ContextoRefuerzo:
+	consulta = f"Refuerzo doctrinario para mejorar el indicador {indicador} en evaluacion por competencias."
+
+	if unidad_id:
+		from pathlib import Path
+		from backend.pipeline_rag import cargar_vector_store, recuperar_fragmentos_relevantes
+		base_dir = Path(__file__).resolve().parent.parent / "data" / "vector_store" / str(unidad_id)
+		col_name = f"acapomil_{unidad_id}"
+		try:
+			vstore = cargar_vector_store(persist_directory=base_dir, collection_name=col_name)
+			resultados = recuperar_fragmentos_relevantes(pregunta=consulta, tau=tau, k=4, vector_store=vstore)
+		except FileNotFoundError:
+			resultados = []
+	else:
+		from backend.pipeline_rag import recuperar_fragmentos_relevantes
+		resultados = recuperar_fragmentos_relevantes(pregunta=consulta, tau=tau, k=4)
+
 	fragmentos = [item.fragmento for item in resultados]
 	return ContextoRefuerzo(indicador=indicador, fragmentos=fragmentos)
 
 
 def _formatear_contexto_refuerzo(contextos: list[ContextoRefuerzo]) -> str:
 	bloques: list[str] = []
-
 	for contexto in contextos:
-		if not contexto.fragmentos:
-			bloques.append(
-				f"Indicador {contexto.indicador}: sin evidencia doctrinaria sobre tau."
-			)
-			continue
+		if contexto.fragmentos:
+			for fragmento in contexto.fragmentos:
+				bloques.append(f"- {fragmento}")
 
-		bloques.append(f"Indicador {contexto.indicador}:")
-		for idx, fragmento in enumerate(contexto.fragmentos, start=1):
-			bloques.append(f"- Fragmento {idx}: {fragmento}")
+	if not bloques:
+		return "No hay fragmentos específicos en la base vectorial. Basa las actividades estrictamente en tu conocimiento experto técnico sobre los temas indicados."
 
 	return "\n".join(bloques)
 
@@ -114,11 +121,14 @@ def _normalizar_brechas(brechas_forzadas: list[str] | None) -> list[str]:
 
 
 def _armar_entrada_llm(payload: dict[str, Any]) -> dict[str, Any]:
+	from backend.database import obtener_brechas_alumno, listar_indicadores_unidad
+
 	nombre_alumno = str(payload.get("nombre_alumno", "")).strip()
 	alumnos_grupo = [str(item).strip() for item in payload.get("alumnos_grupo", []) if str(item).strip()]
 	tau = float(payload.get("tau", DEFAULT_TAU))
 	brechas_forzadas = payload.get("brechas_forzadas")
 	modo_cohorte = bool(payload.get("modo_cohorte", False))
+	unidad_id = payload.get("unidad_id")
 
 	if modo_cohorte:
 		if not alumnos_grupo:
@@ -156,8 +166,24 @@ def _armar_entrada_llm(payload: dict[str, Any]) -> dict[str, Any]:
 			resumen = obtener_brechas_alumno(nombre_alumno)
 			indicadores = resumen.get("indicadores_brecha", [])
 
+	# EXTRAER DESCRIPCIONES REALES DESDE LA BASE DE DATOS
+	descripciones_temas = []
+	if unidad_id:
+		try:
+			inds_db = listar_indicadores_unidad(int(unidad_id))
+			mapa_inds = {r["codigo"]: r.get("descripcion", "") for r in inds_db}
+			for cod in indicadores:
+				desc = mapa_inds.get(cod, "")
+				descripciones_temas.append(desc if desc else cod)
+		except Exception:
+			descripciones_temas = indicadores
+	else:
+		descripciones_temas = indicadores
+
+	descripciones_temas = [t for t in descripciones_temas if t]
+
 	contextos = [
-		_recuperar_contexto_por_indicador(indicador=cod, tau=tau)
+		_recuperar_contexto_por_indicador(indicador=cod, tau=tau, unidad_id=unidad_id)
 		for cod in indicadores
 	]
 
@@ -166,73 +192,48 @@ def _armar_entrada_llm(payload: dict[str, Any]) -> dict[str, Any]:
 		"alumnos_grupo": resumen.get("alumnos_grupo", alumnos_grupo),
 		"puntaje_total": resumen.get("puntaje_total"),
 		"nota_final": resumen.get("nota_final"),
-		"indicadores_brecha": ", ".join(indicadores) if indicadores else "Sin brechas",
+		"indicadores_brecha": ", ".join(descripciones_temas) if descripciones_temas else "Sin brechas",
 		"contexto_refuerzo": _formatear_contexto_refuerzo(contextos),
 		"tau": tau,
 	}
 
 
 def construir_cadena_plan_4_semanas(colectivo: bool = False):
-	"""Construye una cadena LCEL para generar plan pedagogico individual o colectivo."""
+	"""Construye una cadena LCEL para generar plan pedagogico en formato de tabla vertical, forzando contexto tecnico."""
 	_asegurar_retrieval_disponible()
+
+	instrucciones_base = (
+		"Eres un docente militar del área de Ingeniería y Tecnología elaborando un Plan de Trabajo práctico y detallado.\n"
+		"Datos:\n"
+		"- Alumno(s): {alumno}\n"
+		"- Temas técnicos a estudiar (Brechas reales detectadas): {indicadores_brecha}\n"
+		"- Doctrina técnica de apoyo:\n{contexto_refuerzo}\n\n"
+		"REGLAS ESTRICTAS Y OBLIGATORIAS:\n"
+		"1) PROHIBIDO INVENTAR ESCENARIOS BÉLICOS: Basa las actividades ÚNICA Y EXCLUSIVAMENTE en los 'Temas técnicos a estudiar'. Si los temas tratan de Bases de Datos, habla de SQL, Modelos E/R, Normalización, etc. NO inventes ejemplos fuera del contexto de la ingeniería de software.\n"
+		"2) DETALLE DE ACTIVIDADES: En la fila 'Actividades', explica paso a paso qué debe hacer el alumno. Da instrucciones claras como leer conceptos, diseñar diagramas o programar scripts.\n"
+		"3) FORMATO EXACTO: Para CADA semana, usa EXACTAMENTE esta estructura de tabla Markdown de 2 columnas:\n\n"
+		"### Semana [X]: [Nombre del tema técnico real a estudiar]\n"
+		"| Componente | Descripción Operativa |\n"
+		"| :--- | :--- |\n"
+		"| **Actividades** | [Instrucción técnica detallada, paso a paso] |\n"
+		"| **Dinámica de Apoyo** | [Cómo interactuar con el tutor/compañeros para resolver dudas técnicas] |\n"
+		"| **Coevaluación** | [Actividad de revisión cruzada técnica con compañeros (ej. auditar código o diagramas)] |\n"
+		"| **Evidencia Requerida** | [Entregable concreto: ej. Script SQL, Diagrama E/R, Informe técnico] |\n"
+		"| **Criterio de Logro** | [Qué define que la tarea técnica fue realizada con éxito] |\n\n"
+		"4) NO generes introducciones, saludos ni conclusiones. Tu respuesta debe consistir SOLO en los 4 bloques de semanas con sus tablas.\n"
+		"5) OBLIGATORIO: Independientemente de si el alumno reprobó 1 o 5 temas, DEBES generar SIEMPRE una estructura de EXACTAMENTE 4 semanas. Si hay pocos temas, distribúyelos o incluye semanas de repaso y evaluación final. Si hay muchos temas, agrúpalos.\n"
+	)
+
 	if colectivo:
-		prompt = ChatPromptTemplate.from_messages(
-			[
-				(
-					"system",
-					"Eres un asesor pedagogico militar experto en didactica por competencias. "
-					"Genera planes accionables, claros y medibles para una cohorte de cadetes. "
-					"Debes promover apoyo entre pares, tutorias entre cadetes y trabajo colaborativo."
-				),
-				(
-					"human",
-					"Genera un Plan de Trabajo Colectivo por Cohorte de 4 semanas para la cohorte {alumno}.\n"
-					"Cadetes del grupo:\n"
-					"{alumnos_grupo}\n"
-					"Datos de la cohorte:\n"
-					"- Puntaje total: {puntaje_total}\n"
-					"- Nota final: {nota_final}\n"
-					"- Indicadores reprobados (<0.60): {indicadores_brecha}\n"
-					"- Umbral de confianza retrieval (tau): {tau}\n\n"
-					"Contexto doctrinario recuperado:\n"
-					"{contexto_refuerzo}\n\n"
-					"Requisitos de salida:\n"
-					"1) Secciones por Semana 1, 2, 3 y 4.\n"
-					"2) Cada semana debe incluir objetivo, actividades, evidencia y criterio de logro.\n"
-					"3) Relaciona cada actividad con indicadores reprobados especificos.\n"
-					"4) Incluye dinamicas de apoyo entre pares, tutorias entre cadetes y seguimiento del instructor.\n"
-					"5) Formula actividades de cohesion de cohorte y coevaluacion.\n"
-					"6) Escribe en espanol tecnico, claro y operativo."
-				),
-			]
-		)
+		prompt = ChatPromptTemplate.from_messages([
+			("system", "Eres un Profesor Militar de Ingeniería. Genera planes de estudio técnicos, detallados, sin alucinaciones bélicas y en formato estricto de tabla."),
+			("human", instrucciones_base)
+		])
 	else:
-		prompt = ChatPromptTemplate.from_messages(
-			[
-				(
-					"system",
-					"Eres un asesor pedagogico militar experto en didactica por competencias. "
-					"Genera planes accionables, claros y medibles."
-				),
-				(
-					"human",
-					"Genera un plan de trabajo pedagogico detallado de 4 semanas para el alumno {alumno}.\n"
-					"Datos del alumno:\n"
-					"- Puntaje total: {puntaje_total}\n"
-					"- Nota final: {nota_final}\n"
-					"- Indicadores reprobados (<0.60): {indicadores_brecha}\n"
-					"- Umbral de confianza retrieval (tau): {tau}\n\n"
-					"Contexto doctrinario recuperado:\n"
-					"{contexto_refuerzo}\n\n"
-					"Requisitos de salida:\n"
-					"1) Secciones por Semana 1, 2, 3 y 4.\n"
-					"2) Cada semana debe incluir objetivo, actividades, evidencia y criterio de logro.\n"
-					"3) Relaciona cada actividad con indicadores reprobados especificos.\n"
-					"4) Incluir estrategia de seguimiento docente y autoevaluacion del alumno.\n"
-					"5) Escribe en espanol tecnico, claro y operativo."
-				),
-			]
-		)
+		prompt = ChatPromptTemplate.from_messages([
+			("system", "Eres un Profesor Militar de Ingeniería. Genera planes de estudio técnicos, detallados, sin alucinaciones bélicas y en formato estricto de tabla."),
+			("human", instrucciones_base)
+		])
 
 	llm = _crear_llm()
 	parser = StrOutputParser()
@@ -284,8 +285,9 @@ def generar_plan_trabajo_cohorte(
 	alumnos_grupo: list[str],
 	brechas_forzadas: list[str] | None = None,
 	tau: float = DEFAULT_TAU,
+	unidad_id: str = None,
 ) -> dict[str, Any]:
-	"""Genera un plan colectivo por cohorte manteniendo el mismo formato de salida."""
+	"""Genera un plan colectivo por cohorte manteniendo el mismo formato de salida y conectando el RAG."""
 	grupo_limpio = [str(item).strip() for item in alumnos_grupo if str(item).strip()]
 	if not grupo_limpio:
 		raise ValueError("Debe indicar al menos un alumno en alumnos_grupo.")
@@ -298,6 +300,7 @@ def generar_plan_trabajo_cohorte(
 			"tau": tau,
 			"brechas_forzadas": brechas_forzadas,
 			"modo_cohorte": True,
+			"unidad_id": unidad_id,
 		}
 	)
 
@@ -327,3 +330,33 @@ def generar_plan_trabajo_cohorte(
 		"tau": tau,
 		"plan_4_semanas": plan,
 	}
+
+
+def generar_sugerencia_pregunta_cobertura(indicador: str, unidad_id: str, tau: float = DEFAULT_TAU) -> str:
+	"""Genera una propuesta de pregunta para cubrir un indicador huerfano usando la bibliografia especifica de la unidad."""
+	contexto = _recuperar_contexto_por_indicador(indicador=indicador, tau=tau, unidad_id=unidad_id)
+
+	if not contexto.fragmentos:
+		return (
+			f"⚠️ **Atención:** No se encontró doctrina suficiente (con umbral similitud > {tau}) en la bibliografía "
+			f"vectorizada de esta unidad para el indicador {indicador}. Ve a 'Bibliografía y Vectorización' y carga documentos pertinentes."
+		)
+
+	doctrina_texto = "\n".join([f"- {frag}" for frag in contexto.fragmentos])
+
+	prompt = ChatPromptTemplate.from_messages([
+		("system", "Eres un evaluador académico militar experto en diseño curricular por competencias. Tu misión es formular reactivos técnicos basados estrictamente en la bibliografía aportada."),
+		("human",
+		 "Genera una propuesta formal de pregunta de opción múltiple para evaluar el indicador: {indicador}.\n\n"
+		 "Requisitos:\n"
+		 "1) Enunciado claro y contextualizado.\n"
+		 "2) Cuatro alternativas (a, b, c, d), con solo una correcta.\n"
+		 "3) **Justificación explícita:** Explica por qué la alternativa es correcta, citando y haciendo referencia directa a la doctrina provista a continuación.\n\n"
+		 "Doctrina militar extraída de la unidad:\n{contexto_refuerzo}")
+	])
+
+	llm = _crear_llm()
+	parser = StrOutputParser()
+	chain = prompt | llm | parser
+
+	return chain.invoke({"indicador": indicador, "contexto_refuerzo": doctrina_texto})

@@ -7,6 +7,9 @@ from typing import Iterable
 import math
 import os
 
+# Bloqueo de telemetría de ChromaDB (Evita errores de capture() en consola)
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import docx2txt
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document

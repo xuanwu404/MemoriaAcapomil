@@ -15,7 +15,7 @@ import pandas as pd
 
 
 UMBRAL_APROBACION = 0.60
-ARCHIVO_NOTAS = Path(__file__).resolve().parent.parent / "Notas.xlsx"
+ARCHIVO_NOTAS = Path(__file__).resolve().parent.parent / "Archivos Proyecto" / "Notas.xlsx"
 HOJA_PUNTAJES = "Puntajes"
 HOJA_INDICADORES = "Indicadores de desempeño"
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "acapomil.db"
@@ -60,6 +60,7 @@ def init_database() -> None:
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				rut TEXT NOT NULL,
 				nombre TEXT NOT NULL,
+				email TEXT NOT NULL DEFAULT '',
 				anio TEXT NOT NULL,
 				mencion TEXT NOT NULL,
 				UNIQUE(rut, anio, mencion)
@@ -125,6 +126,7 @@ def init_database() -> None:
 		)
 
 		_migrar_tabla_alumnos_si_requiere(conn)
+		_migrar_tabla_alumnos_email(conn)
 		_migrar_tabla_mapeo_preguntas_si_requiere(conn)
 
 		# Xuanwu: semilla fija y unica exigida para un arranque limpio controlado.
@@ -166,6 +168,7 @@ def _asegurar_esquema_no_destructivo() -> None:
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				rut TEXT NOT NULL,
 				nombre TEXT NOT NULL,
+				email TEXT NOT NULL DEFAULT '',
 				anio TEXT NOT NULL,
 				mencion TEXT NOT NULL,
 				UNIQUE(rut, anio, mencion)
@@ -231,6 +234,7 @@ def _asegurar_esquema_no_destructivo() -> None:
 		)
 
 		_migrar_tabla_alumnos_si_requiere(conn)
+		_migrar_tabla_alumnos_email(conn)
 		_migrar_tabla_mapeo_preguntas_si_requiere(conn)
 
 		# Xuanwu: semilla fija y unica exigida para un arranque limpio controlado.
@@ -487,6 +491,12 @@ def _migrar_tabla_usuarios_si_requiere(conn: sqlite3.Connection) -> None:
 	conn.execute("DROP TABLE IF EXISTS usuarios")
 	conn.execute("ALTER TABLE usuarios_new RENAME TO usuarios")
 	conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrar_tabla_alumnos_email(conn: sqlite3.Connection) -> None:
+	columnas = {row["name"] for row in conn.execute("PRAGMA table_info(alumnos)").fetchall()}
+	if "email" not in columnas:
+		conn.execute("ALTER TABLE alumnos ADD COLUMN email TEXT NOT NULL DEFAULT ''")
 
 
 def _migrar_tabla_alumnos_si_requiere(conn: sqlite3.Connection) -> None:
@@ -879,24 +889,24 @@ def eliminar_unidad(unidad_id: int) -> None:
 		conn.execute("DELETE FROM unidades WHERE id = ?", (unidad_id,))
 
 
-def crear_alumno(rut: str, nombre: str, anio: str, mencion: str) -> int:
+def crear_alumno(rut: str, nombre: str, email: str, anio: str, mencion: str) -> int:
 	if not validar_rut_chileno(rut):
 		raise ValueError("RUT invalido segun modulo 11.")
 	rut_formateado = formatear_rut_chileno(rut)
 	with _get_connection() as conn:
 		cursor = conn.execute(
 			"""
-			INSERT INTO alumnos (rut, nombre, anio, mencion)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO alumnos (rut, nombre, email, anio, mencion)
+			VALUES (?, ?, ?, ?, ?)
 			""",
-			(rut_formateado, nombre.strip(), anio, mencion),
+			(rut_formateado, nombre.strip(), email.strip(), anio, mencion),
 		)
 		return int(cursor.lastrowid)
 
 
 def listar_alumnos(anio: str | None = None, mencion: str | None = None) -> list[dict[str, Any]]:
 	with _get_connection() as conn:
-		query = "SELECT id, rut, nombre, anio, mencion FROM alumnos"
+		query = "SELECT id, rut, nombre, email, anio, mencion FROM alumnos"
 		params: list[Any] = []
 		filtros: list[str] = []
 		if anio is not None:
@@ -917,7 +927,7 @@ def buscar_alumno_por_rut_anio_mencion(rut: str, anio: str, mencion: str) -> dic
 	with _get_connection() as conn:
 		row = conn.execute(
 			"""
-			SELECT id, rut, nombre, anio, mencion
+			SELECT id, rut, nombre, email, anio, mencion
 			FROM alumnos
 			WHERE rut = ? AND anio = ? AND mencion = ?
 			""",

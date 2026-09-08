@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from docx import Document
 
 
@@ -60,7 +61,11 @@ from backend.database import (
 	reemplazar_resultados_alumno,
 	validar_rut_chileno,
 )
-from backend.orquestador import generar_plan_trabajo_alumno, generar_plan_trabajo_cohorte
+from backend.orquestador import (
+	generar_plan_trabajo_alumno,
+	generar_plan_trabajo_cohorte,
+	generar_sugerencia_pregunta_cobertura,
+)
 from backend.pipeline_rag import cargar_documentos_docx, construir_vector_store
 
 
@@ -81,82 +86,160 @@ st.set_page_config(
 )
 
 
+def _bloquear_lector_navegador() -> None:
+	"""Inyecta un listener JS en el documento padre para evitar que el navegador abra PDFs sueltos por error."""
+	components.html(
+		"""
+		<script>
+		const doc = window.parent.document;
+
+		doc.addEventListener('dragover', function(e) {
+			e.preventDefault();
+		}, false);
+
+		doc.addEventListener('drop', function(e) {
+			// Verifica si el objetivo del drop es la zona de carga de Streamlit
+			const isDropzone = e.target.closest('[data-testid="stFileUploadDropzone"]');
+
+			// Si cayó fuera del área de carga, bloqueamos la acción nativa del navegador
+			if (!isDropzone) {
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		}, false);
+		</script>
+		""",
+		height=0,
+		width=0,
+	)
+
+
 def _inject_styles() -> None:
 	st.markdown(
 		"""
 		<style>
+		/* 1. Fondo global y texto base */
+		.stApp { background-color: #F8F9FA; color: #212529; }
+
+		/* 2. Cabeceras Hero (Rojo Institucional con texto 100% BLANCO) */
 		.hero {
-			background: linear-gradient(130deg, #0b3c5d 0%, #173f5f 55%, #20639b 100%);
-			color: #ffffff;
-			padding: 1.2rem;
-			border-radius: 14px;
-			border: 1px solid rgba(255,255,255,0.16);
-			margin-bottom: 1rem;
+			background: linear-gradient(135deg, #B71C1C 0%, #D32F2F 100%);
+			padding: 1.5rem; border-radius: 8px;
+			box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+			margin-bottom: 2rem; border: 1px solid #880E4F;
 		}
-		.card {
-			background: #f7fbff;
-			border: 1px solid #d6e6f5;
-			border-radius: 14px;
-			padding: 1rem;
-			margin-bottom: 0.8rem;
-		}
-		.tag {
-			display: inline-block;
-			margin-right: .4rem;
-			margin-bottom: .4rem;
-			padding: .2rem .6rem;
-			border-radius: 999px;
-			font-size: 0.82rem;
-			background: #eaf3fb;
-			border: 1px solid #cbe1f5;
-			color: #0b3c5d;
-		}
-		/* Xuanwu: convertimos el radio del sidebar en botones ergonomicos y modernos. */
-		section[data-testid="stSidebar"] .stRadio > div {
-			gap: 8px;
-		}
-		/* Regla 1: ocultar circulos nativos de radio para apariencia tipo boton. */
-		section[data-testid="stSidebar"] .stRadio input[type="radio"],
-		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"] > div:first-child {
-			display: none !important;
-		}
-		/* Regla 2: opciones como botones independientes. */
-		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"] {
-			display: block !important;
-			width: 100%;
-			padding: 12px 20px !important;
-			margin-bottom: 12px !important;
+		.hero h2, .hero p, .hero h3 { color: #FFFFFF !important; margin: 0; text-shadow: 1px 1px 2px rgba(0,0,0,0.3); }
+
+		/* 3. Cajas y Contenedores (Bordes definidos y sombras sutiles) */
+		div[data-testid="stVerticalBlock"] > div[style*="border"] {
+			background-color: #FFFFFF !important;
 			border-radius: 8px !important;
-			border: 1px solid rgba(255, 255, 255, 0.26) !important;
-			background-color: rgba(8, 28, 44, 0.38) !important;
-			cursor: pointer;
-			transition: background-color 0.22s ease, transform 0.18s ease, border-color 0.22s ease;
+			border: 1px solid #CED4DA !important; /* Borde claramente visible */
+			box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important;
+			padding: 1.5rem !important;
+			margin-bottom: 1.5rem !important;
 		}
-		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"] [data-testid="stMarkdownContainer"] p {
+
+		/* 4. Inputs y Selectboxes (Affordance: deben parecer clickeables) */
+		.stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
+			border: 1px solid #ADB5BD !important;
+			border-radius: 6px !important;
+			background-color: #FFFFFF !important;
+			color: #212529 !important;
+		}
+		.stTextInput input:focus, .stSelectbox div[data-baseweb="select"]:focus-within, .stTextArea textarea:focus {
+			border-color: #D32F2F !important;
+			box-shadow: 0 0 0 2px rgba(211, 47, 47, 0.25) !important;
+		}
+
+		/* 5. Botones Primarios */
+		button[kind="primary"] {
+			background-color: #D32F2F !important;
+			color: #FFFFFF !important;
+			border: none !important; border-radius: 6px !important;
+			font-weight: 600 !important; padding: 0.5rem 1rem !important;
+		}
+		button[kind="primary"]:hover { background-color: #B71C1C !important; box-shadow: 0 4px 8px rgba(183,28,28,0.3) !important;}
+
+		/* 6. Sidebar (Navegación limpia y botones uniformes) */
+		section[data-testid="stSidebar"] { background-color: #F8F9FA !important; border-right: 1px solid #DEE2E6 !important; }
+
+		/* Ocultar el círculo nativo del radio button */
+		section[data-testid="stSidebar"] .stRadio div[role="radio"] div:first-child,
+		section[data-testid="stSidebar"] .stRadio input[type="radio"] { display: none !important; }
+
+		/* Contenedor del grupo de botones */
+		section[data-testid="stSidebar"] .stRadio > div { width: 100% !important; gap: 8px !important; }
+
+		/* Diseño de cada botón (Ancho total uniforme) */
+		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"] {
+			display: flex !important;
+			width: 100% !important;
+			background-color: #FFFFFF !important;
+			border: 1px solid #CED4DA !important;
+			border-radius: 6px !important;
+			padding: 12px 15px !important;
 			margin: 0 !important;
-			color: #d9e8f6 !important;
-			font-weight: 500;
+			transition: all 0.2s ease-in-out !important;
+			box-sizing: border-box !important;
 		}
-		/* Regla 4: hover ergonomico en opciones inactivas. */
-		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:not(:has(input[type="radio"]:checked)):hover {
-			background-color: rgba(29, 74, 109, 0.85) !important;
-			border-color: rgba(255, 255, 255, 0.45) !important;
-			transform: translateY(-1px);
+		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"] p {
+			color: #495057 !important; /* Gris oscuro legible */
+			font-weight: 500 !important;
+			margin: 0 !important;
+			width: 100% !important;
 		}
-		/* Regla 3: opcion activa en rojo con texto blanco. */
+		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:hover { background-color: #E9ECEF !important; }
+
+		/* 7. Sidebar Activo (Rojo con texto BLANCO OBLIGATORIO) */
 		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:has(input[type="radio"]:checked) {
-			background-color: #ff4b4b !important;
-			border-color: #ff4b4b !important;
+			background-color: #D32F2F !important; border-color: #B71C1C !important;
 		}
-		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:has(input[type="radio"]:checked) [data-testid="stMarkdownContainer"] p {
-			color: #ffffff !important;
-			font-weight: bold !important;
+		section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:has(input[type="radio"]:checked) * {
+			color: #FFFFFF !important; font-weight: 600 !important;
 		}
-		section[data-testid="stSidebar"] .stButton button,
-		.stButton button {
-			padding: 0.6rem 0.9rem !important;
-			margin-bottom: 12px !important;
-			border-radius: 10px !important;
+
+		/* 8. Etiquetas / Tags */
+		.tag { background: #FFEBEE; border: 1px solid #FFCDD2; color: #C62828; padding: 0.2rem 0.8rem; border-radius: 12px; font-weight: 600; font-size: 0.85rem; display: inline-block; margin: 0.2rem; }
+
+		/* 9. File Uploader (Drag & Drop Dropzone Mejorado) */
+		[data-testid="stFileUploadDropzone"] {
+			border: 3px dashed #B71C1C !important;
+			background-color: #F8F9FA !important;
+			border-radius: 12px !important;
+			padding: 3.5rem 2rem !important; /* Hace la caja considerablemente más alta */
+			transition: all 0.3s ease-in-out !important;
+		}
+
+		/* Efecto Hover / Drag Over: Crece y cambia de color para atraer el archivo */
+		[data-testid="stFileUploadDropzone"]:hover,
+		[data-testid="stFileUploadDropzone"]:focus-within {
+			background-color: #FFEBEE !important;
+			border-color: #D32F2F !important;
+			transform: scale(1.02) !important; /* Aumenta su tamaño un 2% al acercar el archivo */
+			box-shadow: 0 8px 16px rgba(211, 47, 47, 0.15) !important;
+		}
+
+		/* Estilizar el texto interior y el icono para que hagan juego */
+		[data-testid="stFileUploadDropzone"] div[data-testid="stMarkdownContainer"] p {
+			color: #333333 !important;
+			font-size: 1.1rem !important;
+			font-weight: 500 !important;
+		}
+
+		/* Estilizar el botón interno "Browse files" para que sea coherente */
+		[data-testid="stFileUploadDropzone"] button {
+			background-color: #D32F2F !important;
+			color: #FFFFFF !important;
+			border: none !important;
+			border-radius: 6px !important;
+			font-weight: 600 !important;
+			transition: all 0.2s ease !important;
+		}
+		[data-testid="stFileUploadDropzone"] button:hover {
+			background-color: #B71C1C !important;
+			transform: translateY(-1px) !important;
+			box-shadow: 0 4px 8px rgba(183, 28, 28, 0.3) !important;
 		}
 		</style>
 		""",
@@ -188,6 +271,8 @@ def _init_state() -> None:
 		st.session_state.indicadores_excel_evento = ""
 	if "indicadores_excel_procesado" not in st.session_state:
 		st.session_state.indicadores_excel_procesado = False
+	if "wizard_eval_step" not in st.session_state:
+		st.session_state.wizard_eval_step = 1
 
 
 def _slug(texto: str) -> str:
@@ -753,14 +838,26 @@ def _resolver_indicador_asociado(req: str, indicador_texto: str, indicadores: li
 	if not indicadores:
 		return _normalizar_codigo_req(req) or "R4.1.1"
 
-	req_norm = _normalizar_codigo_req(req)
+	req_norm = _normalizar_codigo_req(req)  # Ej: "R4.1"
+	# Buscar si en el texto del indicador dice "IE2", "IE3", etc.
+	match_ie = re.search(r'IE\s*(\d+)', str(indicador_texto), re.IGNORECASE)
+
+	# Si detecta el número de IE, construye el código exacto (Ej: R4.1 + . + 2 = R4.1.2)
+	if req_norm and match_ie:
+		codigo_construido = f"{req_norm}.{match_ie.group(1)}"
+		indicadores_norm = [str(i).strip().upper() for i in indicadores]
+		if codigo_construido in indicadores_norm:
+			return codigo_construido
+
 	ind_norm = _normalizar_codigo_req(indicador_texto)
 	indicadores_norm = [str(i).strip().upper() for i in indicadores]
 
+	# Búsqueda tradicional por coincidencia exacta
 	for codigo in indicadores_norm:
 		if ind_norm and (codigo == ind_norm or codigo.startswith(ind_norm) or ind_norm.startswith(codigo)):
 			return codigo
 
+	# Búsqueda de respaldo
 	for codigo in indicadores_norm:
 		if req_norm and (codigo == req_norm or codigo.startswith(req_norm)):
 			return codigo
@@ -844,6 +941,18 @@ def _extraer_mapeo_docx_tabla_tributacion(
 	except Exception:
 		return []
 
+	# -- NUEVO: Extracción inteligente de puntajes por ítem --
+	mapa_puntos = {}
+	texto_completo = "\n".join([p.text for p in doc.paragraphs])
+	# Busca patrones como "ITEM I: ... (03 puntos)" tolerando saltos de línea intermedios
+	patrones_puntos = re.finditer(r"ITEM\s+([IVX]+)[^\(]{0,100}\(\s*0?(\d+(?:[.,]\d+)?)\s*puntos?", texto_completo, re.IGNORECASE)
+	for match in patrones_puntos:
+		item_roman = match.group(1).upper()
+		try:
+			mapa_puntos[item_roman] = float(match.group(2).replace(',', '.'))
+		except ValueError:
+			pass
+
 	for table in doc.tables:
 		filas: list[list[str]] = []
 		for row in table.rows:
@@ -885,10 +994,16 @@ def _extraer_mapeo_docx_tabla_tributacion(
 			indicador_asociado = _resolver_indicador_asociado(req, indicador_txt, indicadores)
 
 			for pregunta in preguntas:
+				# -- NUEVO: Asignar el puntaje detectado según la letra romana de la pregunta --
+				puntos_pregunta = 1.0
+				match_item = re.match(r"^([IVX]+)\.", pregunta)
+				if match_item and match_item.group(1).upper() in mapa_puntos:
+					puntos_pregunta = mapa_puntos[match_item.group(1).upper()]
+
 				propuesta_raw.append(
 					{
 						"numero_pregunta": pregunta,
-						"puntos_maximos": 1.0,
+						"puntos_maximos": puntos_pregunta,
 						"indicadores_asociados": indicador_asociado,
 					}
 				)
@@ -904,6 +1019,17 @@ def _extraer_mapeo_pdf_tabla_tributacion(
 	indicadores: list[str],
 ) -> list[dict[str, Any]]:
 	texto = _leer_texto_pdf_desde_bytes(archivo_bytes)
+
+	# -- NUEVO: Extracción inteligente de puntajes por ítem --
+	mapa_puntos = {}
+	patrones_puntos = re.finditer(r"ITEM\s+([IVX]+)[^\(]{0,100}\(\s*0?(\d+(?:[.,]\d+)?)\s*puntos?", texto, re.IGNORECASE)
+	for match in patrones_puntos:
+		item_roman = match.group(1).upper()
+		try:
+			mapa_puntos[item_roman] = float(match.group(2).replace(',', '.'))
+		except ValueError:
+			pass
+
 	norm = _normalizar_texto_parser(texto)
 	requeridos = ["req", "criterios de evaluacion", "indicador de evaluacion", "pregunta"]
 	if not all(token in norm for token in requeridos):
@@ -929,10 +1055,16 @@ def _extraer_mapeo_pdf_tabla_tributacion(
 
 		indicador_asociado = _resolver_indicador_asociado(req, linea_limpia, indicadores)
 		for pregunta in preguntas:
+			# -- NUEVO: Asignar el puntaje detectado --
+			puntos_pregunta = 1.0
+			match_item = re.match(r"^([IVX]+)\.", pregunta)
+			if match_item and match_item.group(1).upper() in mapa_puntos:
+				puntos_pregunta = mapa_puntos[match_item.group(1).upper()]
+
 			propuesta_raw.append(
 				{
 					"numero_pregunta": pregunta,
-					"puntos_maximos": 1.0,
+					"puntos_maximos": puntos_pregunta,
 					"indicadores_asociados": indicador_asociado,
 				}
 			)
@@ -1012,21 +1144,17 @@ def _render_login() -> None:
 		unsafe_allow_html=True,
 	)
 
-	col1, col2 = st.columns([1.2, 1])
-	with col1:
-		with st.container(border=True):
-			tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesion", "📝 Registrarse"])
+	with st.container(border=True):
+		tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesion", "📝 Registrarse"])
 
-			with tab_login:
-				st.subheader("Acceso docente")
-				usuario = st.text_input(
-					"Usuario",
-					key="login_usuario",
-					placeholder="Ingrese su nombre de usuario o correo",
-				)
+		with tab_login:
+			st.subheader("Acceso docente")
+			with st.form("login_form_docente"):
+				usuario = st.text_input("Usuario", key="login_usuario", placeholder="Ingrese su nombre de usuario o correo")
 				clave = st.text_input("Clave institucional", type="password", key="login_clave")
+				submit_login = st.form_submit_button("Ingresar al sistema", use_container_width=True, type="primary")
 
-				if st.button("Ingresar al sistema", use_container_width=True, type="primary"):
+				if submit_login:
 					# Xuanwu: autenticamos contra SQLite para persistencia real.
 					credenciales = obtener_usuario_por_credenciales(usuario.strip(), clave)
 					if credenciales:
@@ -1037,37 +1165,37 @@ def _render_login() -> None:
 						st.session_state.usuario_rol = str(credenciales.get("rol", "docente"))
 						st.session_state.unidad_activa_id = None
 						st.rerun()
-					st.error("Credenciales invalidas para acceso docente.")
-
-			with tab_registro:
-				st.subheader("Registro de nuevo docente")
-				with st.form("registro_docente_form", clear_on_submit=True):
-					nuevo_username = st.text_input("Username", placeholder="usuario.docente")
-					nuevo_nombre_completo = st.text_input("Nombre completo", placeholder="Nombre Apellido")
-					nueva_clave = st.text_input("Clave", type="password")
-					registro_ok = st.form_submit_button("Registrar docente", use_container_width=True)
-
-				if registro_ok:
-					username = nuevo_username.strip()
-					nombre_completo = nuevo_nombre_completo.strip()
-					if not username or not nombre_completo or not nueva_clave.strip():
-						st.error("Completa username, nombre completo y clave para registrarte.")
-					elif obtener_usuario_por_username(username):
-						st.warning("Ese usuario ya existe. Usa otro nombre o inicia sesion.")
 					else:
-						# Xuanwu: registro docente persistente en SQLite.
-						crear_usuario(username, nombre_completo, nueva_clave, "docente")
-						st.success("Registro exitoso. Ya puedes iniciar sesion en la pestana de acceso.")
+						st.error("Credenciales invalidas para acceso docente.")
 
-	with col2:
-		with st.container(border=True):
-			st.markdown("### 🎯 Perfil habilitado")
-			st.markdown("- Docente por defecto: **123** (123)")
-			st.markdown("- Admin por defecto: **admin**")
-			st.markdown("- Clave inicial docente por defecto: **123**")
-			st.markdown("- Clave inicial admin por defecto: **admin123**")
-			st.markdown("- Ambito: Evaluacion por competencias")
-			st.markdown("- Seguridad: Sesion obligatoria antes de operar")
+		with tab_registro:
+			st.subheader("Registro de nuevo docente")
+			with st.form("registro_docente_form", clear_on_submit=True):
+				nuevo_username = st.text_input("Username", placeholder="usuario.docente")
+				nuevo_nombre_completo = st.text_input("Nombre completo", placeholder="Nombre Apellido")
+				nueva_clave = st.text_input("Clave", type="password")
+				registro_ok = st.form_submit_button("Registrar docente", use_container_width=True)
+
+			if registro_ok:
+				username = nuevo_username.strip()
+				nombre_completo = nuevo_nombre_completo.strip()
+				if not username or not nombre_completo or not nueva_clave.strip():
+					st.error("Completa username, nombre completo y clave para registrarte.")
+				elif obtener_usuario_por_username(username):
+					st.warning("Ese usuario ya existe. Usa otro nombre o inicia sesion.")
+				else:
+					# Xuanwu: registro docente persistente en SQLite.
+					crear_usuario(username, nombre_completo, nueva_clave, "docente")
+					st.success("Registro exitoso. Ya puedes iniciar sesion en la pestana de acceso.")
+
+	with st.container(border=True):
+		st.markdown("### 🎯 Perfil habilitado")
+		st.markdown("- Docente por defecto: **123** (123)")
+		st.markdown("- Admin por defecto: **admin**")
+		st.markdown("- Clave inicial docente por defecto: **123**")
+		st.markdown("- Clave inicial admin por defecto: **admin123**")
+		st.markdown("- Ambito: Evaluacion por competencias")
+		st.markdown("- Seguridad: Sesion obligatoria antes de operar")
 
 
 def _render_top_context() -> None:
@@ -1140,8 +1268,8 @@ def _menu_sidebar() -> str:
 		"Navegacion",
 		[
 			"1) Gestion de Unidades",
-			"2) Diseño de Evaluación",
-			"3) Bibliografia y Vectorizacion",
+			"2) Bibliografia y Vectorizacion",
+			"3) Diseño de Evaluación",
 			"4) Trazabilidad RAG",
 			"5) Reportes Jefatura",
 		],
@@ -1159,6 +1287,7 @@ def _vista_admin_matricula() -> None:
 		with c1:
 			nombre = st.text_input("Nombre completo", key="admin_nombre")
 			rut = st.text_input("RUT", placeholder="12.345.678-9", key="admin_rut")
+			email = st.text_input("Correo Institucional", placeholder="alumno@acapomil.cl", key="admin_email")
 		with c2:
 			anio = st.selectbox("Año", ANIOS_CRIM, key="admin_anio")
 			mencion = st.selectbox("Mencion", MENCIONES, key="admin_mencion")
@@ -1175,7 +1304,7 @@ def _vista_admin_matricula() -> None:
 					st.warning("Ese alumno ya esta matriculado para ese CRIM y Mencion.")
 				else:
 					# Xuanwu: matricula centralizada persistente para consumo automatico docente.
-					crear_alumno(rut=rut_formateado, nombre=nombre.strip(), anio=anio, mencion=mencion)
+					crear_alumno(rut=rut_formateado, nombre=nombre.strip(), email=email.strip(), anio=anio, mencion=mencion)
 					st.success("Alumno matriculado correctamente.")
 					st.rerun()
 
@@ -1192,7 +1321,7 @@ def _vista_admin_matricula() -> None:
 			return
 
 		tabla = pd.DataFrame(alumnos)
-		tabla = tabla[["rut", "nombre", "anio", "mencion"]]
+		tabla = tabla[["rut", "nombre", "email", "anio", "mencion"]]
 		st.dataframe(tabla, use_container_width=True)
 
 		mapa = {f"{a['nombre']} ({a['rut']}) | {a['anio']} | {a['mencion']}": int(a["id"]) for a in alumnos}
@@ -1329,56 +1458,51 @@ def _vista_unidades() -> None:
 
 	unidades = listar_unidades(docente_id=docente_id)
 
-	c1, c2 = st.columns([1.2, 1])
-	with c1:
-		with st.container(border=True):
-			st.markdown("### ➕ Crear unidad")
-			with st.form("crear_unidad_form", clear_on_submit=True):
-				nombre = st.text_input("Nombre de unidad", placeholder="Bases de Datos")
-				anio = st.selectbox("Año", ANIOS_CRIM)
-				mencion = st.selectbox("Mencion", MENCIONES)
-				submitted = st.form_submit_button("Crear unidad", use_container_width=True)
+	with st.expander("➕ Crear nueva unidad de aprendizaje", expanded=False):
+		with st.form("crear_unidad_form", clear_on_submit=True):
+			nombre = st.text_input("Nombre de unidad", placeholder="Bases de Datos")
+			anio = st.selectbox("Año", ANIOS_CRIM)
+			mencion = st.selectbox("Mencion", MENCIONES)
+			submitted = st.form_submit_button("Crear unidad", use_container_width=True)
 
-			if submitted:
-				if not nombre.strip():
-					st.error("Ingresa un nombre valido para la unidad.")
-				else:
-					# Xuanwu: alta de unidad persistente en base relacional.
-					unidad_id = crear_unidad(nombre.strip(), anio, mencion, docente_id)
-					if not st.session_state.unidad_activa_id:
-						st.session_state.unidad_activa_id = unidad_id
-					# Xuanwu: preparamos carpetas por unidad para doctrina y vector store.
-					_data_unidad_dir(str(unidad_id)).mkdir(parents=True, exist_ok=True)
-					_vector_unidad_dir(str(unidad_id)).mkdir(parents=True, exist_ok=True)
-					st.success("Unidad creada y disponible para seleccion.")
-					st.rerun()
-
-	with c2:
-		with st.container(border=True):
-			st.markdown("### 🎛️ Seleccionar unidad activa")
-			if not unidades:
-				st.info("Aun no existen unidades.")
+		if submitted:
+			if not nombre.strip():
+				st.error("Ingresa un nombre valido para la unidad.")
 			else:
-				mapa = {
-					f"{u['nombre']} | {u['anio']} | {u['mencion']}": u["id"]
-					for u in unidades
-				}
-				opciones = list(mapa.keys())
-				idx = 0
-				if st.session_state.unidad_activa_id is not None:
-					for i, key in enumerate(opciones):
-						if mapa[key] == st.session_state.unidad_activa_id:
-							idx = i
-							break
-				seleccion = st.selectbox("Unidad", opciones, index=idx)
-				if st.button("Activar unidad", use_container_width=True):
-					st.session_state.unidad_activa_id = mapa[seleccion]
-					st.success("Unidad activa actualizada.")
-					# Xuanwu: refresco explicito para actualizar cabecera y sidebar de inmediato.
-					st.rerun()
+				# Xuanwu: alta de unidad persistente en base relacional.
+				unidad_id = crear_unidad(nombre.strip(), anio, mencion, docente_id)
+				if not st.session_state.unidad_activa_id:
+					st.session_state.unidad_activa_id = unidad_id
+				# Xuanwu: preparamos carpetas por unidad para doctrina y vector store.
+				_data_unidad_dir(str(unidad_id)).mkdir(parents=True, exist_ok=True)
+				_vector_unidad_dir(str(unidad_id)).mkdir(parents=True, exist_ok=True)
+				st.success("Unidad creada y disponible para seleccion.")
+				st.rerun()
 
 	with st.container(border=True):
-		st.markdown("### 🛠️ Editar / Eliminar unidad")
+		st.markdown("### 🎛️ Seleccionar unidad activa")
+		if not unidades:
+			st.info("Aun no existen unidades.")
+		else:
+			mapa = {
+				f"{u['nombre']} | {u['anio']} | {u['mencion']}": u["id"]
+				for u in unidades
+			}
+			opciones = list(mapa.keys())
+			idx = 0
+			if st.session_state.unidad_activa_id is not None:
+				for i, key in enumerate(opciones):
+					if mapa[key] == st.session_state.unidad_activa_id:
+						idx = i
+						break
+			seleccion = st.selectbox("Unidad", opciones, index=idx)
+			if st.button("Activar unidad", use_container_width=True):
+				st.session_state.unidad_activa_id = mapa[seleccion]
+				st.success("Unidad activa actualizada.")
+				# Xuanwu: refresco explicito para actualizar cabecera y sidebar de inmediato.
+				st.rerun()
+
+	with st.expander("🛠️ Editar / Eliminar unidad", expanded=False):
 		if not unidades:
 			st.info("Sin unidades para administrar.")
 			return
@@ -1436,7 +1560,7 @@ def _vista_unidades() -> None:
 def _vista_diseno_evaluacion() -> None:
 	st.subheader("🧩 Diseño y Mapeo de Evaluaciones")
 	with st.container(border=True):
-		st.info("Instrucciones de uso: define indicadores, carga el instrumento y valida su matriz de tributacion pregunta-indicador antes de evaluar.")
+		st.info("Instrucciones de uso: completa los 3 pasos del asistente para definir indicadores, construir la matriz base y validar la cobertura doctrinal.")
 
 	unidad = _unidad_activa()
 	if not unidad:
@@ -1444,354 +1568,269 @@ def _vista_diseno_evaluacion() -> None:
 		return
 
 	unidad_id = int(unidad["id"])
+	st.session_state.wizard_eval_step = st.session_state.get("wizard_eval_step", 1)
 
-	with st.container(border=True):
-		st.markdown("### Fase 1: Indicadores de la Unidad Activa")
-		cargador_col, info_col = st.columns(2)
-		with cargador_col:
-			archivo_indicadores = st.file_uploader(
-				"Subir Matriz de Indicadores (.xlsx / .pdf)",
-				type=["xlsx", "pdf"],
-				key=f"excel_uploader_{st.session_state.uploader_key}",
-			)
-		with info_col:
-			st.caption("Excel: columnas Codigo_Completo y Descripcion. PDF: texto con codigo y descripcion.")
+	pasos = {1: "Paso 1: Indicadores", 2: "Paso 2: Matriz Base", 3: "Paso 3: Asistente IA"}
+	nav_col1, nav_col2, nav_col3 = st.columns(3)
+	for columna, paso_num in zip((nav_col1, nav_col2, nav_col3), (1, 2, 3)):
+		with columna:
+			if st.session_state.wizard_eval_step == paso_num:
+				st.markdown(f"**➡️ {pasos[paso_num]}**")
+			else:
+				st.markdown(pasos[paso_num])
 
-		if archivo_indicadores is not None:
-			evento_actual = f"{unidad_id}:{archivo_indicadores.name}:{archivo_indicadores.size}:{st.session_state.uploader_key}"
-			if st.session_state.indicadores_excel_evento != evento_actual:
-				st.session_state.indicadores_excel_evento = evento_actual
-				st.session_state.indicadores_excel_procesado = False
+	# ---------------- Paso 1: Indicadores ----------------
+	if st.session_state.wizard_eval_step == 1:
+		with st.container(border=True):
+			st.markdown("### Fase 1: Indicadores de la Unidad Activa")
+			cargador_col, info_col = st.columns(2)
+			with cargador_col:
+				archivo_indicadores = st.file_uploader(
+					"Subir Matriz de Indicadores (.xlsx / .pdf)",
+					type=["xlsx", "pdf"],
+					key=f"excel_uploader_{st.session_state.uploader_key}",
+				)
+			with info_col:
+				st.caption("Excel: columnas Codigo_Completo y Descripcion. PDF: texto con codigo y descripcion.")
 
-			if not st.session_state.indicadores_excel_procesado:
-				st.session_state.indicadores_excel_procesado = True
-				if archivo_indicadores.name.lower().endswith(".pdf"):
-					try:
-						indicadores_pdf = extraer_indicadores_desde_pdf(archivo_indicadores.getvalue())
-					except Exception as exc:
-						st.error(f"❌ Error al leer el PDF: {exc}")
-					else:
-						indicadores_limpios: list[dict[str, str]] = []
-						vistos: set[str] = set()
-						for fila in indicadores_pdf:
-							codigo = str(fila.get("codigo", "")).strip().upper()
-							descripcion = str(fila.get("descripcion", "")).strip()
-							if not codigo or codigo in vistos:
-								continue
-							vistos.add(codigo)
-							indicadores_limpios.append({"codigo": codigo, "descripcion": descripcion})
+			if archivo_indicadores is not None:
+				evento_actual = f"{unidad_id}:{archivo_indicadores.name}:{archivo_indicadores.size}:{st.session_state.uploader_key}"
+				if st.session_state.indicadores_excel_evento != evento_actual:
+					st.session_state.indicadores_excel_evento = evento_actual
+					st.session_state.indicadores_excel_procesado = False
 
-						if not indicadores_limpios:
-							st.error("No se encontraron indicadores válidos en el PDF.")
-						else:
-							reemplazar_indicadores_unidad(unidad_id, indicadores_limpios)
-							st.success(f"🎉 ¡Se extrajeron y guardaron {len(indicadores_limpios)} indicadores desde el PDF!")
-							st.session_state.uploader_key += 1
-							st.session_state.indicadores_excel_evento = ""
-							st.session_state.indicadores_excel_procesado = False
-							st.rerun()
-				else:
-					try:
-						df_indicadores = pd.read_excel(archivo_indicadores)
-					except Exception as exc:
-						st.error(f"❌ Error al leer el archivo Excel: {exc}")
-					else:
-						df_mapeado = _mapear_columnas_indicadores_excel(df_indicadores)
-						if df_mapeado is None:
-							st.error("❌ Formato de Excel inválido. Debe contener las columnas 'Codigo_Completo' y 'Descripcion'.")
-						else:
-							cargar_indicadores_desde_df(unidad_id, df_mapeado)
-							st.success(f"🎉 ¡Se cargaron con éxito {len(df_mapeado)} indicadores para esta Unidad de Aprendizaje!")
-							st.session_state.uploader_key += 1
-							st.session_state.indicadores_excel_evento = ""
-							st.session_state.indicadores_excel_procesado = False
-							st.rerun()
-		else:
-			indicadores_db = listar_indicadores_unidad(unidad_id)
-			base_rows = [
-				{"codigo": row["codigo"], "descripcion": row.get("descripcion", "") or ""}
-				for row in indicadores_db
-			] or [{"codigo": "R4.1.1", "descripcion": ""}]
-
-			editor_indicadores = st.data_editor(
-				pd.DataFrame(base_rows),
-				use_container_width=True,
-				num_rows="dynamic",
-				key=f"editor_indicadores_unidad_{unidad_id}",
-			)
-
-			if st.button("Guardar indicadores de unidad", use_container_width=True):
-				filas = editor_indicadores.to_dict(orient="records")
-				codigos = [str(f.get("codigo", "")).strip() for f in filas if str(f.get("codigo", "")).strip()]
-				if not codigos:
-					st.error("Debes definir al menos un indicador para la unidad.")
-				elif len(codigos) != len(set(codigos)):
-					st.error("Existen codigos de indicadores duplicados. Corrigelos antes de guardar.")
-				else:
-					reemplazar_indicadores_unidad(unidad_id, filas)
-					st.success("Indicadores de unidad actualizados.")
-					st.rerun()
-
-	indicadores_db = listar_indicadores_unidad(unidad_id)
-	codigos_indicadores = [row["codigo"] for row in indicadores_db]
-
-	with st.container(border=True):
-		st.markdown("### Fase 2: Carga de Instrumento")
-		nombre_eval = st.text_input(
-			"Nombre de evaluación",
-			placeholder="Solemne 1",
-			key=f"nombre_eval_{unidad_id}",
-		)
-		tab_archivo, tab_manual = st.tabs(["📄 Subir Evaluación (.docx / .pdf / .txt)", "✏️ Ingreso Manual de Preguntas"])
-
-		with tab_archivo:
-			archivo_eval = st.file_uploader(
-				"Subir Evaluación (.docx / .pdf / .txt)",
-				type=["docx", "pdf", "txt"],
-				key=f"archivo_eval_{unidad_id}",
-			)
-			archivo_eval_state_key = f"archivo_eval_state_{unidad_id}"
-			if archivo_eval is not None:
-				st.session_state[archivo_eval_state_key] = {
-					"name": archivo_eval.name,
-					"bytes": archivo_eval.getvalue(),
-				}
-
-			archivo_eval_guardado = st.session_state.get(archivo_eval_state_key)
-			preguntas_detectadas_archivo: list[dict[str, str]] = []
-			if archivo_eval_guardado:
-				with st.spinner("Leyendo y detectando preguntas del documento Word..."):
-					try:
-						nombre_archivo_guardado = str(archivo_eval_guardado.get("name", "")).lower()
-						bytes_archivo_guardado = archivo_eval_guardado.get("bytes", b"")
-						if nombre_archivo_guardado.endswith(".docx"):
-							preguntas_detectadas_archivo = _extraer_preguntas_docx_estructuradas(bytes_archivo_guardado)
-							texto_instrumento = _leer_texto_docx_desde_bytes(bytes_archivo_guardado)
-						elif nombre_archivo_guardado.endswith(".pdf"):
-							texto_instrumento = _leer_texto_pdf_desde_bytes(bytes_archivo_guardado)
-							preguntas_detectadas_archivo = _detectar_preguntas_instrumento_detalladas(texto_instrumento)
-						else:
-							texto_instrumento = bytes_archivo_guardado.decode("utf-8", errors="ignore")
-							preguntas_detectadas_archivo = _detectar_preguntas_instrumento_detalladas(texto_instrumento)
-					except Exception as e:
-						st.error(f"❌ Error al procesar el archivo: {e}")
-						preguntas_detectadas_archivo = []
-
-				with st.expander("👁️ Preguntas/Ítems detectados"):
-					if preguntas_detectadas_archivo:
-						st.write("\n".join(f"- {pregunta['display']}" for pregunta in preguntas_detectadas_archivo))
-					else:
-						st.info("No se detectaron preguntas/ítems en el archivo seleccionado.")
-
-			if st.button("⚡ Procesar Evaluación e Ir a Matriz", type="primary", key="btn_procesar_archivo"):
-				if not nombre_eval.strip():
-					st.error("Debes indicar el nombre de la evaluacion.")
-				elif archivo_eval is None and not archivo_eval_guardado:
-					st.error("Debes subir un archivo de evaluación.")
-				else:
-					archivo_fuente = archivo_eval_guardado if archivo_eval_guardado else {"name": archivo_eval.name, "bytes": archivo_eval.getvalue()}
-					nombre_archivo = str(archivo_fuente.get("name", "evaluacion.txt"))
-					bytes_archivo = archivo_fuente.get("bytes", b"")
-					with st.spinner("Leyendo y detectando preguntas del documento Word..."):
+				if not st.session_state.indicadores_excel_procesado:
+					st.session_state.indicadores_excel_procesado = True
+					if archivo_indicadores.name.lower().endswith(".pdf"):
 						try:
-							if nombre_archivo.lower().endswith(".docx"):
-								preguntas_detectadas_archivo = _extraer_preguntas_docx_estructuradas(bytes_archivo)
-								texto_instrumento = _leer_texto_docx_desde_bytes(bytes_archivo)
-							elif nombre_archivo.lower().endswith(".pdf"):
-								texto_instrumento = _leer_texto_pdf_desde_bytes(bytes_archivo)
-								preguntas_detectadas_archivo = _detectar_preguntas_instrumento_detalladas(texto_instrumento)
+							indicadores_pdf = extraer_indicadores_desde_pdf(archivo_indicadores.getvalue())
+						except Exception as exc:
+							st.error(f"❌ Error al leer el PDF: {exc}")
+						else:
+							indicadores_limpios: list[dict[str, str]] = []
+							vistos: set[str] = set()
+							for fila in indicadores_pdf:
+								codigo = str(fila.get("codigo", "")).strip().upper()
+								descripcion = str(fila.get("descripcion", "")).strip()
+								if not codigo or codigo in vistos:
+									continue
+								vistos.add(codigo)
+								indicadores_limpios.append({"codigo": codigo, "descripcion": descripcion})
+
+							if not indicadores_limpios:
+								st.error("No se encontraron indicadores válidos en el PDF.")
 							else:
-								texto_instrumento = bytes_archivo.decode("utf-8", errors="ignore")
-								preguntas_detectadas_archivo = _detectar_preguntas_instrumento_detalladas(texto_instrumento)
-						except Exception as e:
-							st.error(f"❌ Error al procesar el archivo: {e}")
-							preguntas_detectadas_archivo = []
-
-					if not preguntas_detectadas_archivo:
-						st.error("No se detectaron preguntas válidas en el archivo.")
-						return
-
-					eval_dir = _eval_unidad_dir(str(unidad_id))
-					eval_dir.mkdir(parents=True, exist_ok=True)
-					destino = eval_dir / nombre_archivo
-					destino.write_bytes(bytes_archivo)
-					evaluacion_id = guardar_evaluacion(unidad_id, nombre_eval.strip(), str(destino))
-					st.session_state.evaluacion_activa_id = evaluacion_id
-					st.session_state[archivo_eval_state_key] = {"name": nombre_archivo, "bytes": bytes_archivo}
-					st.success("Evaluación registrada y lista para construir la matriz.")
-					st.rerun()
-
-		with tab_manual:
-			texto_preguntas_eval = st.text_area(
-				"📝 Ingrese las preguntas de la evaluación (Una pregunta por línea)",
-				height=140,
-				placeholder="Ingrese una pregunta por línea o separadas por un entero...",
-				key="texto_preguntas_eval",
-			)
-			preguntas_detectadas_manual = _detectar_preguntas_instrumento_detalladas(texto_preguntas_eval, permitir_secuencial=True)
-
-			with st.expander("👁️ Preguntas/Ítems detectados"):
-				if preguntas_detectadas_manual:
-					st.write("\n".join(f"- {pregunta['display']}" for pregunta in preguntas_detectadas_manual))
-				else:
-					st.info("Ingresa texto para detectar preguntas automáticamente.")
-
-			if st.button("📝 Registrar Preguntas Manuales", key="btn_procesar_manual"):
-				if not nombre_eval.strip():
-					st.error("Debes indicar el nombre de la evaluacion.")
-				elif not texto_preguntas_eval.strip():
-					st.error("Debes ingresar al menos una pregunta en la evaluación.")
-				elif not preguntas_detectadas_manual:
-					st.error("No se detectaron preguntas válidas en el texto manual.")
-				else:
-					eval_dir = _eval_unidad_dir(str(unidad_id))
-					eval_dir.mkdir(parents=True, exist_ok=True)
-					slug_eval = _slug(nombre_eval.strip()) or "evaluacion"
-					destino_txt = eval_dir / f"{slug_eval}.txt"
-					destino_txt.write_text(texto_preguntas_eval.strip(), encoding="utf-8")
-					evaluacion_id = guardar_evaluacion(unidad_id, nombre_eval.strip(), str(destino_txt))
-					st.session_state.evaluacion_activa_id = evaluacion_id
-					st.success("Preguntas manuales registradas y listas para la matriz.")
-					st.rerun()
-
-	evaluaciones = listar_evaluaciones_unidad(unidad_id)
-	if not evaluaciones:
-		st.info("Aun no hay evaluaciones registradas para esta unidad.")
-		return
-
-	with st.container(border=True):
-		st.markdown("### Fase 3: Mapeo Asistido por IA")
-		mapa_eval = {f"{e['nombre']} (ID {e['id']})": e for e in evaluaciones}
-		opciones_eval = list(mapa_eval.keys())
-		idx_eval = 0
-		for i, key in enumerate(opciones_eval):
-			if int(mapa_eval[key]["id"]) == int(st.session_state.evaluacion_activa_id or -1):
-				idx_eval = i
-				break
-		seleccion_eval = st.selectbox("Evaluacion activa", opciones_eval, index=idx_eval)
-		evaluacion = mapa_eval[seleccion_eval]
-		evaluacion_id = int(evaluacion["id"])
-		st.session_state.evaluacion_activa_id = evaluacion_id
-
-		confirmar_eliminacion_eval = st.checkbox(
-			"Confirmar eliminacion de evaluacion activa",
-			key=f"confirm_del_eval_{evaluacion_id}",
-		)
-		if st.button("🗑️ Eliminar evaluación activa", use_container_width=True, type="secondary"):
-			if not confirmar_eliminacion_eval:
-				st.warning("Marca la confirmacion antes de eliminar la evaluacion activa.")
+								reemplazar_indicadores_unidad(unidad_id, indicadores_limpios)
+								st.success(f"🎉 ¡Se extrajeron y guardaron {len(indicadores_limpios)} indicadores desde el PDF!")
+								st.session_state.uploader_key += 1
+								st.session_state.indicadores_excel_evento = ""
+								st.session_state.indicadores_excel_procesado = False
+								st.rerun()
+					else:
+						try:
+							df_indicadores = pd.read_excel(archivo_indicadores)
+						except Exception as exc:
+							st.error(f"❌ Error al leer el archivo Excel: {exc}")
+						else:
+							df_mapeado = _mapear_columnas_indicadores_excel(df_indicadores)
+							if df_mapeado is None:
+								st.error("❌ Formato de Excel inválido. Debe contener las columnas 'Codigo_Completo' y 'Descripcion'.")
+							else:
+								cargar_indicadores_desde_df(unidad_id, df_mapeado)
+								st.success(f"🎉 ¡Se cargaron con éxito {len(df_mapeado)} indicadores para esta Unidad de Aprendizaje!")
+								st.session_state.uploader_key += 1
+								st.session_state.indicadores_excel_evento = ""
+								st.session_state.indicadores_excel_procesado = False
+								st.rerun()
 			else:
-				eliminar_evaluacion(evaluacion_id)
-				if st.session_state.evaluacion_activa_id == evaluacion_id:
-					st.session_state.evaluacion_activa_id = None
-				st.success("Evaluacion eliminada correctamente.")
+				indicadores_db = listar_indicadores_unidad(unidad_id)
+
+				# Mostrar feedback claro al usuario sobre el estado actual
+				if indicadores_db:
+					st.success(f"✅ Hay {len(indicadores_db)} indicadores guardados en la base de datos para esta Unidad.")
+				else:
+					st.warning("⚠️ No hay indicadores guardados. Sube un archivo o créalos manualmente en la tabla inferior.")
+
+				base_rows = [
+					{"codigo": row["codigo"], "descripcion": row.get("descripcion", "") or ""}
+					for row in indicadores_db
+				] or [{"codigo": "R4.1.1", "descripcion": ""}]
+
+				editor_indicadores = st.data_editor(
+					pd.DataFrame(base_rows),
+					use_container_width=True,
+					num_rows="dynamic",
+					key=f"editor_indicadores_unidad_{unidad_id}",
+				)
+
+				if st.button("Guardar indicadores de unidad", use_container_width=True):
+					filas = editor_indicadores.to_dict(orient="records")
+					codigos = [str(f.get("codigo", "")).strip() for f in filas if str(f.get("codigo", "")).strip()]
+					if not codigos:
+						st.error("Debes definir al menos un indicador para la unidad.")
+					elif len(codigos) != len(set(codigos)):
+						st.error("Existen codigos de indicadores duplicados. Corrigelos antes de guardar.")
+					else:
+						reemplazar_indicadores_unidad(unidad_id, filas)
+						st.success("Indicadores de unidad actualizados.")
+						st.rerun()
+
+			if st.button("Siguiente: Crear Matriz Base", use_container_width=True, type="primary"):
+				st.session_state.wizard_eval_step = 2
 				st.rerun()
 
-		archivo_path = Path(str(evaluacion.get("archivo_path", "")).strip())
-		mapeo_existente = listar_mapeo_evaluacion(evaluacion_id)
+	# ---------------- Paso 2: Matriz Base ----------------
+	elif st.session_state.wizard_eval_step == 2:
+		st.markdown("### Fase 2: Matriz Base de la Evaluación")
+		nombre_eval = st.text_input("Nombre de evaluación", value=st.session_state.get("nombre_eval_temporal", "Solemne 1"))
 
-		propuesta_rows: list[dict[str, Any]] = []
-		if mapeo_existente:
-			propuesta_rows = _consolidar_pregunta_indicadores([
-				{
-					"numero_pregunta": row["numero_pregunta"],
-					"puntos_maximos": row["puntos_maximos"],
-					"indicadores_asociados": row.get("indicadores_asociados", ""),
-				}
-				for row in mapeo_existente
-			])
-		elif archivo_path.exists():
-			try:
-				texto_instrumento = _leer_texto_instrumento_desde_path(archivo_path)
-				permitir_secuencial = archivo_path.suffix.lower() == ".txt"
-				if archivo_path.suffix.lower() == ".docx":
-					lineas_preguntas_detalladas = _extraer_preguntas_docx_estructuradas(archivo_path.read_bytes())
-				else:
-					lineas_preguntas_detalladas = _detectar_preguntas_instrumento_detalladas(texto_instrumento, permitir_secuencial=permitir_secuencial)
-			except Exception as exc:
-				st.error(f"No se pudo leer el archivo de preguntas: {exc}")
-				lineas_preguntas_detalladas = []
+		# --- INICIO BLOQUE OPCIONAL AUTOCOMPLETADO ---
+		with st.expander("📥 (Opcional) Autocompletar matriz desde archivo de evaluación", expanded=False):
+			st.info("💡 Si ya tienes tu evaluación en Word o PDF con una tabla de tributación (Req, Indicador, Pregunta), súbela aquí. El sistema extraerá y autocompletará la matriz por ti.")
+			archivo_eval = st.file_uploader("Subir evaluación (.docx o .pdf)", type=["docx", "pdf"], key="uploader_autocompletar")
 
-			if not lineas_preguntas_detalladas:
-				st.warning("El archivo de preguntas no contiene lineas validas para construir la matriz base.")
+			if archivo_eval and st.button("Procesar y Autocompletar", type="primary"):
+				with st.spinner("Analizando documento y extrayendo tabla de tributación..."):
+					bytes_archivo = archivo_eval.getvalue()
+					indicadores_db = listar_indicadores_unidad(unidad_id)
+					codigos_ind = [r["codigo"] for r in indicadores_db]
+					opciones_ind_full = [f"{r['codigo']} - {r.get('descripcion', '')}" for r in indicadores_db]
+
+					# Llamada a las funciones extractoras nativas del sistema
+					if archivo_eval.name.lower().endswith(".docx"):
+						datos_extraidos = _extraer_mapeo_docx_tabla_tributacion(bytes_archivo, codigos_ind)
+					else:
+						datos_extraidos = _extraer_mapeo_pdf_tabla_tributacion(bytes_archivo, codigos_ind)
+
+					if datos_extraidos:
+						nueva_matriz = []
+						for d in datos_extraidos:
+							# Mapear los códigos extraídos a las opciones completas del multiselect
+							cods = [c.strip() for c in str(d.get("indicadores_asociados", "")).split(",")]
+							sel_full = [opt for opt in opciones_ind_full if any(opt.startswith(c) for c in cods)]
+							nueva_matriz.append({
+								"numero_pregunta": d["numero_pregunta"],
+								"puntos_maximos": float(d["puntos_maximos"]),
+								"indicadores_asociados": sel_full
+							})
+						st.session_state.matriz_temporal = nueva_matriz
+						st.session_state.num_preg_temporal = len(nueva_matriz)
+						st.success(f"✅ ¡Éxito! Se autocompletaron {len(nueva_matriz)} preguntas desde el documento.")
+						st.rerun()
+					else:
+						st.warning("⚠️ No se encontró una tabla de tributación válida o el formato no coincide. Puedes armar la matriz manualmente a continuación.")
+		# --- FIN BLOQUE OPCIONAL AUTOCOMPLETADO ---
+
+		num_preg = st.number_input("Cantidad de preguntas", min_value=1, max_value=150, value=st.session_state.get("num_preg_temporal", 10))
+
+		indicadores_db = listar_indicadores_unidad(unidad_id)
+		opciones_ind = [f"{r['codigo']} - {r.get('descripcion', '')}" for r in indicadores_db]
+
+		st.markdown("#### Asignación de Indicadores por Pregunta")
+		col_p, col_pts, col_ind = st.columns([1, 1, 4])
+		col_p.markdown("**Pregunta**")
+		col_pts.markdown("**Puntos**")
+		col_ind.markdown("**Indicadores Asociados (Selección Múltiple)**")
+
+		matriz_guardada = st.session_state.get("matriz_temporal", [])
+		matriz_base = []
+
+		for i in range(num_preg):
+			# Si hay datos autocompletados, conservamos el nombre original (ej. "I.1", "II.2"). Si es manual, usamos "P1", "P2".
+			if i < len(matriz_guardada) and str(matriz_guardada[i].get("numero_pregunta", "")).strip() != "":
+				pregunta_id = matriz_guardada[i]["numero_pregunta"]
+				fila_previa = matriz_guardada[i]
 			else:
-				autoseed_indicador = codigos_indicadores[0] if codigos_indicadores else ""
-				propuesta_rows = [
-					{
-						"numero_pregunta": fila["codigo"],
-						"puntos_maximos": 1.0,
-						"indicadores_asociados": autoseed_indicador,
-					}
-					for fila in lineas_preguntas_detalladas
-				]
-		else:
-			st.error("No se encontro el archivo txt de preguntas para construir la matriz base.")
-			propuesta_rows = []
+				pregunta_id = f"P{i+1}"
+				fila_previa = next((f for f in matriz_guardada if f["numero_pregunta"] == pregunta_id), None)
 
-		editor_mapeo = st.data_editor(
-			pd.DataFrame(propuesta_rows),
-			use_container_width=True,
-			num_rows="fixed",
-			key=f"editor_mapeo_eval_{evaluacion_id}",
-			column_config={
-				"numero_pregunta": st.column_config.TextColumn(disabled=True),
-				"puntos_maximos": st.column_config.NumberColumn(min_value=0.1, step=0.1),
-				"indicadores_asociados": st.column_config.TextColumn(
-					help="Ingrese los códigos separados por coma (ej. 1.1, 4.3.3)"
-				),
-			},
-		)
+			cp, cpts, cind = st.columns([1, 1, 4])
+			cp.markdown(f"**{pregunta_id}**")
 
-		indicadores_usados: set[str] = set()
-		for fila in editor_mapeo.to_dict(orient="records"):
-			for codigo in _parsear_indicadores_asociados(str(fila.get("indicadores_asociados", ""))):
+			def_pts = float(fila_previa["puntos_maximos"]) if fila_previa else 1.0
+			def_ind = [ind for ind in fila_previa["indicadores_asociados"] if ind in opciones_ind] if fila_previa else []
+
+			pts = cpts.number_input("Pts", value=def_pts, step=0.5, key=f"pts_{i}_w2", label_visibility="collapsed")
+			sel = cind.multiselect("Ind", options=opciones_ind, default=def_ind, key=f"ind_{i}_w2", label_visibility="collapsed")
+
+			matriz_base.append({
+				"numero_pregunta": pregunta_id,
+				"puntos_maximos": pts,
+				"indicadores_asociados": sel
+			})
+
+		c_back, c_next = st.columns(2)
+		with c_back:
+			if st.button("⬅️ Atrás (Paso 1)"):
+				st.session_state.wizard_eval_step = 1
+				st.rerun()
+		with c_next:
+			if st.button("Siguiente: Validar Cobertura ➡️", type="primary"):
+				# Validar que al menos una pregunta tenga un indicador asociado
+				total_indicadores = sum(len(fila["indicadores_asociados"]) for fila in matriz_base)
+
+				if total_indicadores == 0:
+					st.error("⚠️ **Matriz Vacía:** No has asignado ningún indicador a las preguntas. Despliega el menú opcional de arriba para autocompletar con un archivo, o selecciona los indicadores manualmente en la tabla antes de avanzar.")
+				else:
+					st.session_state.matriz_temporal = matriz_base
+					st.session_state.nombre_eval_temporal = nombre_eval
+					st.session_state.num_preg_temporal = num_preg
+					st.session_state.wizard_eval_step = 3
+					st.rerun()
+
+	# ---------------- Paso 3: Validar Cobertura ----------------
+	elif st.session_state.wizard_eval_step == 3:
+		st.markdown("### Fase 3: Validación de Cobertura Doctrinal")
+		matriz = st.session_state.get("matriz_temporal", [])
+		indicadores_db = listar_indicadores_unidad(unidad_id)
+
+		indicadores_usados = set()
+		for fila in matriz:
+			for ind_str in fila["indicadores_asociados"]:
+				codigo = ind_str.split(" - ")[0].strip()
 				indicadores_usados.add(codigo)
-		indicadores_faltantes = set(codigos_indicadores) - indicadores_usados
 
-		if indicadores_faltantes:
-			st.warning(
-				"⚠️ Alerta de Cobertura Doctrinal: Faltan preguntas para evaluar los siguientes indicadores: "
-				+ ", ".join(sorted(indicadores_faltantes))
-			)
+		codigos_totales = set([r["codigo"] for r in indicadores_db])
+		faltantes = codigos_totales - indicadores_usados
+
+		if faltantes:
+			st.error(f"⚠️ Alerta de Cobertura Doctrinal: Faltan preguntas para evaluar los siguientes indicadores: {', '.join(sorted(faltantes))}")
+			for cod in sorted(faltantes):
+				if st.button(f"🤖 Generar sugerencia con IA para {cod}"):
+					with st.spinner(f"Consultando doctrina y generando pregunta para {cod}..."):
+						try:
+							sugerencia = generar_sugerencia_pregunta_cobertura(cod, str(unidad_id))
+							st.info(sugerencia)
+						except Exception as e:
+							st.error(f"Error de ejecución IA: {e}")
 		else:
-			st.success("✅ Cobertura del 100%. Todos los indicadores están siendo evaluados.")
+			st.success("✅ Matriz 100% Doctrinalmente Coherente. Todos los indicadores están cubiertos.")
 
-		if st.button("Confirmar y Validar Matriz de Evaluación", use_container_width=True, type="primary"):
-			filas = editor_mapeo.to_dict(orient="records")
-			filas_validas_raw: list[dict[str, Any]] = []
-			for fila in filas:
-				numero = str(fila.get("numero_pregunta", "")).strip()
-				indicadores_texto = _normalizar_lista_indicadores(
-					str(fila.get("indicadores_asociados", ""))
-				)
-				try:
-					puntos = float(fila.get("puntos_maximos", 0))
-				except (TypeError, ValueError):
-					puntos = 0.0
-
-				if not numero or not indicadores_texto or puntos <= 0:
-					continue
-				if codigos_indicadores:
-					indices = _parsear_indicadores_asociados(indicadores_texto)
-					if not indices or any(ind not in codigos_indicadores for ind in indices):
-						continue
-
-				filas_validas_raw.append(
-					{
-						"numero_pregunta": numero.upper(),
-						"puntos_maximos": puntos,
-						"indicadores_asociados": indicadores_texto,
-					}
-				)
-
-			filas_validas = _consolidar_pregunta_indicadores(filas_validas_raw)
-
-			if not filas_validas:
-				st.error("La matriz no tiene filas validas para guardar.")
-			else:
-				reemplazar_mapeo_evaluacion(evaluacion_id, filas_validas)
-				st.success("Matriz de evaluacion validada y guardada.")
+		c_back, c_save = st.columns(2)
+		with c_back:
+			if st.button("⬅️ Atrás (Editar Matriz)"):
+				st.session_state.wizard_eval_step = 2
 				st.rerun()
+		with c_save:
+			if st.button("💾 Guardar Evaluación en Base de Datos", type="primary"):
+				filas_db = []
+				for fila in matriz:
+					codigos = [s.split(" - ")[0].strip() for s in fila["indicadores_asociados"]]
+					if codigos:
+						filas_db.append({
+							"numero_pregunta": fila["numero_pregunta"],
+							"puntos_maximos": fila["puntos_maximos"],
+							"indicadores_asociados": ", ".join(codigos)
+						})
+				if not filas_db:
+					st.error("No puedes guardar una evaluación sin indicadores asignados.")
+				else:
+					eval_id = guardar_evaluacion(unidad_id, st.session_state.get("nombre_eval_temporal", "Solemne"), "generado_por_app.txt")
+					reemplazar_mapeo_evaluacion(eval_id, filas_db)
+					st.success("Evaluación y Matriz guardadas con éxito.")
+					st.session_state.wizard_eval_step = 1
+					st.rerun()
+
 
 
 def _reindexar_unidad(unidad_id: str) -> None:
@@ -1971,93 +2010,108 @@ def _vista_trazabilidad() -> None:
 		st.warning("Registra alumnos primero para continuar.")
 		return
 
-	st.markdown("### 1) Ingreso de puntajes por pregunta")
-	alumno_label_map = {f"{a['nombre']} ({a['rut']})": a for a in alumnos}
-	alumno_sel_label = st.selectbox("Alumno", list(alumno_label_map.keys()))
-	alumno_sel = alumno_label_map[alumno_sel_label]
-	alumno_id = int(alumno_sel["id"])
-	puntajes_historicos = obtener_puntajes_pregunta(alumno_id=alumno_id, evaluacion_id=evaluacion_id)
+	st.markdown("### 1) Ingreso Masivo de Puntajes (Matriz de Curso)")
+	st.info("Ingresa los puntajes obtenidos por cada alumno. La matriz se guardará para toda la sección de forma simultánea.")
 
-	df_preguntas = pd.DataFrame(
-		{
-			"numero_pregunta": row["numero_pregunta"],
-			"indicadores_asociados": row.get("indicadores_asociados", ""),
-			"puntos_maximos": float(row["puntos_maximos"]),
-			"puntos_obtenidos": float(puntajes_historicos.get(str(row["numero_pregunta"]), 0.0)),
+	preguntas_ordenadas = sorted(mapeo_eval, key=lambda x: _clave_orden_pregunta(x["numero_pregunta"]))
+
+	# Construir datos para el DataFrame
+	datos_curso = []
+	for alumno in alumnos:
+		alumno_id = int(alumno["id"])
+		puntajes_historicos = obtener_puntajes_pregunta(alumno_id=alumno_id, evaluacion_id=evaluacion_id)
+
+		fila = {
+			"ID_Alumno": alumno_id,
+			"RUT": alumno["rut"],
+			"Alumno": alumno["nombre"]
 		}
-		for row in mapeo_eval
-	)
-	if not df_preguntas.empty:
-		df_preguntas = df_preguntas.sort_values(
-			by="numero_pregunta",
-			key=lambda x: x.map(_clave_orden_pregunta),
-		).reset_index(drop=True)
+		for p in preguntas_ordenadas:
+			num_preg = p["numero_pregunta"]
+			col_name = f"{num_preg} (Max: {p['puntos_maximos']})"
+			fila[col_name] = float(puntajes_historicos.get(num_preg, 0.0))
+		datos_curso.append(fila)
 
-	edited = st.data_editor(
-		df_preguntas,
+	df_curso = pd.DataFrame(datos_curso)
+
+	# Configurar columnas para st.data_editor
+	config_columnas = {
+		"ID_Alumno": None, # Ocultar columna técnica
+		"RUT": st.column_config.TextColumn(disabled=True, width="medium"),
+		"Alumno": st.column_config.TextColumn(disabled=True, width="medium"),
+	}
+	for p in preguntas_ordenadas:
+		col_name = f"{p['numero_pregunta']} (Max: {p['puntos_maximos']})"
+		config_columnas[col_name] = st.column_config.NumberColumn(
+			min_value=0.0, max_value=float(p['puntos_maximos']), step=0.5, width="small"
+		)
+
+	# Sincronización bidireccional con session_state para evitar pérdida de datos por recargas
+	clave_editor = f"estado_matriz_{evaluacion_id}"
+
+	def sincronizar_matriz():
+		st.session_state[clave_editor] = st.session_state[f"editor_masivo_{evaluacion_id}"]
+
+	if clave_editor not in st.session_state:
+		st.session_state[clave_editor] = df_curso
+	else:
+		# Si la BD cambió estructuralmente (ej. más alumnos), reseteamos el estado. Si no, mantenemos lo que el usuario estaba editando.
+		if len(st.session_state[clave_editor]) != len(df_curso):
+			st.session_state[clave_editor] = df_curso
+
+	edited_df = st.data_editor(
+		st.session_state[clave_editor],
 		use_container_width=True,
-		num_rows="fixed",
-		key=f"editor_matriz_traza_{alumno_id}_{evaluacion_id}",
-		column_config={
-			"puntos_obtenidos": st.column_config.NumberColumn(min_value=0.0, step=0.1),
-			"puntos_maximos": st.column_config.NumberColumn(disabled=True),
-			"indicadores_asociados": st.column_config.TextColumn(disabled=True),
-			"numero_pregunta": st.column_config.TextColumn(disabled=True),
-		},
+		hide_index=True,
+		column_config=config_columnas,
+		key=f"editor_masivo_{evaluacion_id}",
+		on_change=sincronizar_matriz
 	)
+
+	if st.button("💾 Guardar Calificaciones y Calcular Brechas", use_container_width=True, type="primary"):
+		with st.spinner("Guardando calificaciones y calculando métricas RAG para toda la sección..."):
+			for index, row in edited_df.iterrows():
+				alumno_id = row["ID_Alumno"]
+				puntajes_a_guardar = []
+				acumulado_indicadores = {}
+
+				for p in preguntas_ordenadas:
+					num_preg = p["numero_pregunta"]
+					col_name = f"{num_preg} (Max: {p['puntos_maximos']})"
+					obtenido = float(row[col_name])
+					maximo = float(p["puntos_maximos"])
+
+					puntajes_a_guardar.append({"numero_pregunta": num_preg, "puntos_obtenidos": obtenido})
+
+					# Acumular por indicador para este alumno
+					inds_asociados = _parsear_indicadores_asociados(p["indicadores_asociados"])
+					for ind in inds_asociados:
+						if ind not in acumulado_indicadores:
+							acumulado_indicadores[ind] = {"obtenido": 0.0, "maximo": 0.0}
+						acumulado_indicadores[ind]["obtenido"] += obtenido
+						acumulado_indicadores[ind]["maximo"] += maximo
+
+				# Persistencia en BD
+				guardar_puntajes_pregunta(alumno_id, evaluacion_id, puntajes_a_guardar)
+
+				resumen_indicadores = []
+				for ind, vals in acumulado_indicadores.items():
+					logro = vals["obtenido"] / vals["maximo"] if vals["maximo"] > 0 else 0.0
+					resumen_indicadores.append({
+						"Indicador": ind,
+						"Logro": round(logro, 4),
+						"Observacion": f"{evaluacion['nombre']} | {vals['obtenido']:.2f}/{vals['maximo']:.2f}"
+					})
+				reemplazar_resultados_alumno(alumno_id, resumen_indicadores)
+
+			# Limpiar el borrador temporal para forzar la recarga limpia desde la BD
+			if clave_editor in st.session_state:
+				del st.session_state[clave_editor]
+
+			st.success("✅ Matriz de curso guardada. Diagnóstico colectivo actualizado.")
+			st.rerun()
 
 	resumen_indicadores: list[dict[str, Any]] = []
-	acumulado: dict[str, dict[str, float]] = {}
-	for fila in edited.to_dict(orient="records"):
-		indicadores = _parsear_indicadores_asociados(str(fila.get("indicadores_asociados", "")))
-		try:
-			maximo = float(fila.get("puntos_maximos", 0.0))
-		except (TypeError, ValueError):
-			maximo = 0.0
-		try:
-			obtenido = float(fila.get("puntos_obtenidos", 0.0))
-		except (TypeError, ValueError):
-			obtenido = 0.0
-
-		if maximo < 0:
-			maximo = 0.0
-		obtenido = max(0.0, min(obtenido, maximo if maximo > 0 else obtenido))
-
-		for indicador in indicadores:
-			if indicador not in acumulado:
-				acumulado[indicador] = {"obtenido": 0.0, "maximo": 0.0}
-			acumulado[indicador]["obtenido"] += obtenido
-			acumulado[indicador]["maximo"] += maximo
-
-	for indicador, valores in acumulado.items():
-		maximo = float(valores["maximo"])
-		obtenido = float(valores["obtenido"])
-		logro = (obtenido / maximo) if maximo > 0 else 0.0
-		resumen_indicadores.append(
-			{
-				"Indicador": indicador,
-				"Logro": round(logro, 4),
-				"Puntaje": f"{obtenido:.2f}/{maximo:.2f}",
-			}
-		)
-
-	if st.button("Guardar resultados por matriz", use_container_width=True):
-		guardar_puntajes_pregunta(
-			alumno_id=alumno_id,
-			evaluacion_id=evaluacion_id,
-			puntajes=edited.to_dict(orient="records"),
-		)
-		registros = [
-			{
-				"Indicador": fila["Indicador"],
-				"Logro": fila["Logro"],
-				"Observacion": f"{evaluacion['nombre']} | {fila['Puntaje']}",
-			}
-			for fila in resumen_indicadores
-		]
-		reemplazar_resultados_alumno(alumno_id=alumno_id, resultados=registros)
-		st.success("Resultados por indicador guardados desde la matriz de evaluacion.")
-		st.rerun()
 
 	if resumen_indicadores:
 		st.markdown("### 2) Logro consolidado por indicador")
@@ -2082,177 +2136,116 @@ def _vista_trazabilidad() -> None:
 			if nombre_alumno and nombre_alumno not in claves:
 				claves.append(nombre_alumno)
 
-	with st.container(border=True):
-		st.markdown("### 📊 Diagnosticó Colectivo y Agrupación por Cohorte")
-		if not mapa_cohortes:
-			st.info("No se detectaron cohortes con indicadores bajo 60% en la unidad activa.")
-		else:
-			for indicador, nombres in sorted(mapa_cohortes.items(), key=lambda item: item[0]):
-				st.markdown(f"**{indicador}**")
-				st.write(", ".join(nombres))
+	st.markdown("### 📊 Diagnóstico Colectivo y Planes de Reforzamiento")
 
-			opciones_cohortes = [
-				f"{indicador} ({len(nombres)} cadetes)"
-				for indicador, nombres in sorted(mapa_cohortes.items(), key=lambda item: item[0])
-			]
-			indice_cohorte = 0
-			if opciones_cohortes:
-				seleccion_cohorte = st.selectbox(
-					"Selector de grupo/cohorte",
-					opciones_cohortes,
-					index=indice_cohorte,
-					key=f"selector_cohorte_{evaluacion_id}",
-				)
-				indicador_seleccionado = seleccion_cohorte.split(" (")[0]
-				cadetes_cohorte = mapa_cohortes.get(indicador_seleccionado, [])
-				tau_cohorte = st.slider(
-					"Tau retrieval para cohorte",
-					0.50,
-					0.95,
-					0.75,
-					0.01,
-					key=f"tau_cohorte_{evaluacion_id}",
-				)
-
-				if st.button(
-					"Generar Plan Colectivo de 4 Semanas para la Cohorte Seleccionada",
-					use_container_width=True,
-					type="primary",
-				):
-					if not cadetes_cohorte:
-						st.warning("La cohorte seleccionada no tiene cadetes asociados.")
-					else:
-						with st.spinner("Generando plan colectivo para la cohorte seleccionada..."):
-							try:
-								salida_cohorte = generar_plan_trabajo_cohorte(
-									cadetes_cohorte,
-									brechas_forzadas=[indicador_seleccionado],
-									tau=tau_cohorte,
-								)
-								st.session_state.borrador_retro = str(salida_cohorte.get("plan_4_semanas", ""))
-								st.success("Plan colectivo generado y cargado en el editor de borrador.")
-							except Exception as exc:
-								st.error(f"No se pudo generar el plan colectivo: {exc}")
-
-	brechas_locales = []
-	for fila in resumen_indicadores:
-		try:
-			if float(fila.get("Logro", 0)) < 0.60:
-				brechas_locales.append(str(fila.get("Indicador", "")))
-		except (TypeError, ValueError):
-			continue
-
-	if brechas_locales:
-		st.warning(f"Brechas detectadas (<0.60): {', '.join(brechas_locales)}")
-	else:
-		st.info("Sin brechas locales detectadas para el alumno seleccionado.")
-
-	st.markdown("### 3) Generar retroalimentacion asistida")
-	col1, col2 = st.columns([2, 1])
-	with col1:
-		alumno_brecha = alumno_sel["nombre"]
-		st.text_input("Alumno objetivo (fuente trazabilidad local)", value=alumno_brecha, disabled=True)
-	with col2:
-		tau = st.slider("Tau retrieval", 0.50, 0.95, 0.75, 0.01)
-
-	if st.button("Generar Plan de 4 Semanas", use_container_width=True, type="primary"):
-		if not brechas_locales:
-			st.warning("No hay brechas bajo 60% en la matriz actual para este alumno.")
-			return
-		with st.spinner("Invocando orquestador RAG + LLM..."):
-			try:
-				# Xuanwu: integramos brechas locales de la matriz con el orquestador oficial.
-				salida = generar_plan_trabajo_alumno(
-					alumno_brecha,
-					tau=tau,
-					brechas_forzadas=brechas_locales,
-				)
-				st.session_state.borrador_retro = str(salida.get("plan_4_semanas", ""))
-				st.success("Borrador generado. Puedes editarlo antes de emitirlo.")
-			except Exception as exc:
-				st.error(f"No se pudo generar el plan: {exc}")
-
-	tab_editar, tab_vista_previa = st.tabs([
-		"📝 Editar Plan (Texto Plano)",
-		"👁️ Vista Previa de Alto Estándar",
-	])
-
-	with tab_editar:
-		st.text_area(
-			"Borrador editable (Human-in-the-loop)",
-			key="borrador_retro",
-			height=400,
-			placeholder="El plan de 4 semanas aparecerá aquí para revisión docente.",
-		)
-
-	with tab_vista_previa:
-		contenido_actual = st.session_state.borrador_retro
-		if not contenido_actual.strip():
-			st.info("Aún no se ha generado ningún plan. Presiona el botón de generación para empezar.")
-		else:
-			st.markdown("### 👁️ Previsualización del Plan de Trabajo")
-			st.markdown(contenido_actual, unsafe_allow_html=True)
-
-	if st.button("💾 Guardar Plan en Historial", use_container_width=True):
-		if not st.session_state.borrador_retro.strip():
-			st.warning("No hay contenido para guardar en el historial.")
-		else:
-			ok = guardar_retroalimentacion_local(
-				rut_alumno=str(alumno_sel["rut"]),
-				unidad_id=str(unidad["id"]),
-				plan_texto=st.session_state.borrador_retro,
-				tau=tau,
-			)
-			if ok:
-				st.success("Plan guardado en el historial local.")
-				st.rerun()
-			else:
-				st.error("No se pudo guardar el plan en el historial local.")
-
-	with st.expander("📂 Ver Historial de Planes Guardados", expanded=False):
-		historial = obtener_historial_retroalimentaciones(
-			rut_alumno=str(alumno_sel["rut"]),
-			unidad_id=str(unidad["id"]),
-		)
-		if not historial:
-			st.info("No hay planes guardados para este alumno en la unidad activa.")
-		else:
-			mapa_historial = {
-				f"{item['fecha_generacion']} | tau={item['tau_utilizado']}": item
-				for item in historial
+	# 1. Analizar brechas por alumno y agrupar por patrón exacto
+	brechas_por_alumno = {}
+	for alumno in alumnos:
+		alumno_id = int(alumno["id"])
+		resultados = listar_resultados_alumno(alumno_id)
+		brechas_locales = [str(r["indicador"]) for r in resultados if float(r.get("logro", 0)) < 0.60]
+		if brechas_locales:
+			brechas_por_alumno[alumno_id] = {
+				"nombre": alumno["nombre"],
+				"email": alumno.get("email", ""),
+				"brechas": sorted(brechas_locales)
 			}
 
-			opciones_historial = list(mapa_historial.keys())
+	if not brechas_por_alumno:
+		st.success("✅ Excelente rendimiento: Ningún alumno presenta brechas bajo el 60% en esta evaluación.")
+		return
 
-			# Declaración segura del selectbox sin asignaciones automáticas directas
-			seleccion_historial = st.selectbox(
-				"Selecciona un plan histórico",
-				opciones_historial,
-				key=f"historial_retro_{alumno_id}_{unidad['id']}",
-			)
+	# Agrupar por el mismo conjunto de brechas
+	mapa_patrones = {}
+	for a_id, data in brechas_por_alumno.items():
+		patron = tuple(data["brechas"])
+		if patron not in mapa_patrones:
+			mapa_patrones[patron] = []
+		mapa_patrones[patron].append(data)
 
-			# Control defensivo estricto antes de renderizar los botones de acción
-			if seleccion_historial and seleccion_historial in mapa_historial:
-				plan_seleccionado = mapa_historial[seleccion_historial]
-				col_cargar, col_eliminar = st.columns(2)
+	st.info("💡 El sistema ha agrupado automáticamente a los alumnos que fallaron exactamente en los mismos indicadores para optimizar los planes.")
 
-				with col_cargar:
-					if st.button("🔌 Cargar plan histórico", use_container_width=True):
-						# La asignación del texto plano sin formato ocurre SOLAMENTE en el click del botón
-						st.session_state.borrador_retro = str(plan_seleccionado["contenido_plan"])
-						st.success("Plan histórico cargado en el editor.")
-						st.rerun()
+	for patron, grupo_alumnos in mapa_patrones.items():
+		nombres = [a["nombre"] for a in grupo_alumnos]
+		st.markdown(f"**Grupo con brechas en: {', '.join(patron)}** ({len(nombres)} alumnos)")
+		st.caption(", ".join(nombres))
 
-				with col_eliminar:
-					if st.button("🗑️ Eliminar de historial", use_container_width=True, type="secondary"):
-						retro_id = int(plan_seleccionado["id"])
-						if eliminar_retroalimentacion_local(retro_id):
-							st.success("✅ Plan histórico eliminado del registro.")
-							st.rerun()
-						else:
-							st.error("No se pudo eliminar el plan del historial.")
-			else:
-				st.caption("Actualizando historial para el estudiante seleccionado...")
+	st.markdown("#### ⚙️ Motor de Generación Masiva")
+	tau_generacion = st.slider("Umbral de similitud (Tau retrieval) para IA", 0.50, 0.95, 0.75, 0.01)
+
+	# Estado de sesión para guardar los planes generados temporalmente
+	if "planes_generados_zip" not in st.session_state:
+		st.session_state.planes_generados_zip = None
+
+	if st.button("🚀 Generar TODOS los Planes de Reforzamiento (Masivo)", use_container_width=True, type="primary"):
+		progreso = st.progress(0, text="Iniciando motor de generación RAG...")
+		total_grupos = len(mapa_patrones)
+
+		planes_completados = []
+
+		for i, (patron, grupo_alumnos) in enumerate(mapa_patrones.items()):
+			nombres = [a["nombre"] for a in grupo_alumnos]
+			emails = [a["email"] for a in grupo_alumnos if a["email"]]
+
+			progreso.progress((i) / total_grupos, text=f"Generando plan {i+1} de {total_grupos} (Brechas: {', '.join(patron)})...")
+
+			try:
+				# Usa la función original, enviando la lista de nombres y forzando las brechas
+				# Usa la función original, enviando la lista de nombres, forzando las brechas y la unidad activa
+				salida = generar_plan_trabajo_cohorte(
+					nombres,
+					brechas_forzadas=list(patron),
+					tau=tau_generacion,
+					unidad_id=str(unidad["id"])
+				)
+				plan_texto = salida.get("plan_4_semanas", "")
+
+				planes_completados.append({
+					"patron": list(patron),
+					"alumnos": nombres,
+					"emails": emails,
+					"contenido": plan_texto
+				})
+			except Exception as e:
+				st.error(f"Error generando plan para grupo {', '.join(nombres)}: {e}")
+
+		progreso.progress(1.0, text="¡Generación completada!")
+
+		# Crear archivo ZIP en memoria
+		zip_buffer = io.BytesIO()
+		with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+			for idx, plan_data in enumerate(planes_completados):
+				# Crear nombre de archivo basado en emails o nombres
+				identificador = "_".join(plan_data["emails"]) if plan_data["emails"] else f"Grupo_{idx+1}"
+				if not identificador.strip():
+					identificador = f"Grupo_{idx+1}"
+
+				nombre_archivo = f"Plan_Refuerzo_{identificador}.md"
+				# Añadir metadatos al documento
+				encabezado = f"Plan de Reforzamiento\nAlumnos: {', '.join(plan_data['alumnos'])}\nBrechas: {', '.join(plan_data['patron'])}\n\n"
+				contenido_final = encabezado + plan_data["contenido"]
+
+				zip_file.writestr(nombre_archivo, contenido_final)
+
+		st.session_state.planes_generados_zip = zip_buffer.getvalue()
+		st.session_state.vista_planes = planes_completados
+		st.rerun()
+
+	# Visualización en Acordeón (Expanders) si hay planes generados
+	if st.session_state.get("planes_generados_zip"):
+		st.success("✅ Planes generados exitosamente. Puedes revisarlos a continuación y descargar el paquete para envío.")
+
+		st.download_button(
+			label="📦 Descargar todos los planes (.ZIP para Email)",
+			data=st.session_state.planes_generados_zip,
+			file_name=f"Planes_Refuerzo_{evaluacion['nombre'].replace(' ', '_')}.zip",
+			mime="application/zip",
+			use_container_width=True
+		)
+
+		for idx, plan in enumerate(st.session_state.vista_planes):
+			with st.expander(f"Plan {idx+1}: {', '.join(plan['alumnos'])} (Brechas: {', '.join(plan['patron'])})"):
+				st.markdown(plan["contenido"])
 
 
 def _vista_reportes() -> None:
@@ -2367,6 +2360,7 @@ def _vista_reportes() -> None:
 def main() -> None:
 	_inject_styles()
 	_init_state()
+	_bloquear_lector_navegador()  # <- Nueva línea agregada
 
 	if not st.session_state.is_logged:
 		_render_login()
@@ -2384,14 +2378,20 @@ def main() -> None:
 
 	if modulo.startswith("1"):
 		_vista_unidades()
-	elif modulo.startswith("2"):
-		_vista_diseno_evaluacion()
-	elif modulo.startswith("3"):
-		_vista_bibliografia()
-	elif modulo.startswith("4"):
-		_vista_trazabilidad()
-	elif modulo.startswith("5"):
-		_vista_reportes()
+	else:
+		# Bloqueo estricto si no hay unidad activa en módulos 2, 3, 4 y 5
+		if not st.session_state.get("unidad_activa_id"):
+			st.error("⚠️ **ACCESO DENEGADO:** Debes crear o seleccionar una 'Unidad Activa' en el módulo 'Gestión de Unidades' antes de poder acceder a las demás funciones del sistema.")
+			return
+
+		if modulo.startswith("2"):
+			_vista_bibliografia()
+		elif modulo.startswith("3"):
+			_vista_diseno_evaluacion()
+		elif modulo.startswith("4"):
+			_vista_trazabilidad()
+		elif modulo.startswith("5"):
+			_vista_reportes()
 
 
 if __name__ == "__main__":
