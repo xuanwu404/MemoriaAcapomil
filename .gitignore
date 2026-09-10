@@ -1,6 +1,21 @@
+# Entornos virtuales
 venv/
 .venv/
+
+# Caché de Python
 __pycache__/
-data/vector_store/
+*.py[cod]
+
+# Bases de datos y almacenamiento vectorial
 *.sqlite3
+*.db
+data/*.db
+data/vector_store/
+data/doctrina/
+
+# Variables de entorno
 .env
+
+# Archivos de sistema / temporales
+.DS_Store
+Thumbs.db

@@ -11,7 +11,8 @@ import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import docx2txt
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# Importación estándar y moderna:
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma
