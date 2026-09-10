@@ -1138,64 +1138,33 @@ def _render_login() -> None:
 		"""
 		<div class="hero">
 			<h2>🛡️ Acceso Institucional ACAPOMIL</h2>
-			<p>Autenticacion requerida. El sistema se habilita solo con sesion valida.</p>
+			<p>Autenticación requerida. Ingrese con sus credenciales institucionales asignadas.</p>
 		</div>
 		""",
 		unsafe_allow_html=True,
 	)
 
 	with st.container(border=True):
-		tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesion", "📝 Registrarse"])
+		st.subheader("🔐 Iniciar Sesión")
+		with st.form("login_form_docente"):
+			usuario = st.text_input("Usuario", key="login_usuario", placeholder="Ingrese su nombre de usuario institucional")
+			clave = st.text_input("Clave institucional", type="password", key="login_clave")
+			submit_login = st.form_submit_button("Ingresar al sistema", use_container_width=True, type="primary")
 
-		with tab_login:
-			st.subheader("Acceso docente")
-			with st.form("login_form_docente"):
-				usuario = st.text_input("Usuario", key="login_usuario", placeholder="Ingrese su nombre de usuario o correo")
-				clave = st.text_input("Clave institucional", type="password", key="login_clave")
-				submit_login = st.form_submit_button("Ingresar al sistema", use_container_width=True, type="primary")
-
-				if submit_login:
-					# Xuanwu: autenticamos contra SQLite para persistencia real.
-					credenciales = obtener_usuario_por_credenciales(usuario.strip(), clave)
-					if credenciales:
-						st.session_state.is_logged = True
-						st.session_state.usuario_activo = credenciales["nombre_completo"]
-						st.session_state.username_activo = credenciales["username"]
-						st.session_state.docente_id = int(credenciales["id"])
-						st.session_state.usuario_rol = str(credenciales.get("rol", "docente"))
-						st.session_state.unidad_activa_id = None
-						st.rerun()
-					else:
-						st.error("Credenciales invalidas para acceso docente.")
-
-		with tab_registro:
-			st.subheader("Registro de nuevo docente")
-			with st.form("registro_docente_form", clear_on_submit=True):
-				nuevo_username = st.text_input("Username", placeholder="usuario.docente")
-				nuevo_nombre_completo = st.text_input("Nombre completo", placeholder="Nombre Apellido")
-				nueva_clave = st.text_input("Clave", type="password")
-				registro_ok = st.form_submit_button("Registrar docente", use_container_width=True)
-
-			if registro_ok:
-				username = nuevo_username.strip()
-				nombre_completo = nuevo_nombre_completo.strip()
-				if not username or not nombre_completo or not nueva_clave.strip():
-					st.error("Completa username, nombre completo y clave para registrarte.")
-				elif obtener_usuario_por_username(username):
-					st.warning("Ese usuario ya existe. Usa otro nombre o inicia sesion.")
+			if submit_login:
+				credenciales = obtener_usuario_por_credenciales(usuario.strip(), clave)
+				if credenciales:
+					st.session_state.is_logged = True
+					st.session_state.usuario_activo = credenciales["nombre_completo"]
+					st.session_state.username_activo = credenciales["username"]
+					st.session_state.docente_id = int(credenciales["id"])
+					st.session_state.usuario_rol = str(credenciales.get("rol", "docente"))
+					st.session_state.unidad_activa_id = None
+					st.rerun()
 				else:
-					# Xuanwu: registro docente persistente en SQLite.
-					crear_usuario(username, nombre_completo, nueva_clave, "docente")
-					st.success("Registro exitoso. Ya puedes iniciar sesion en la pestana de acceso.")
+					st.error("Credenciales inválidas. Verifique su usuario y contraseña.")
 
-	with st.container(border=True):
-		st.markdown("### 🎯 Perfil habilitado")
-		st.markdown("- Docente por defecto: **123** (123)")
-		st.markdown("- Admin por defecto: **admin**")
-		st.markdown("- Clave inicial docente por defecto: **123**")
-		st.markdown("- Clave inicial admin por defecto: **admin123**")
-		st.markdown("- Ambito: Evaluacion por competencias")
-		st.markdown("- Seguridad: Sesion obligatoria antes de operar")
+		st.caption("ℹ️ La asignación y gestión de cuentas docentes se realiza exclusivamente a través de la cuenta Administrador.")
 
 
 def _render_top_context() -> None:
