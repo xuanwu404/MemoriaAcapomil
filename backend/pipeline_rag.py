@@ -7,21 +7,15 @@ from typing import Iterable
 import math
 import os
 
-# Bloqueo de telemetría de ChromaDB (Evita errores de capture() en consola)
+# Bloqueo de telemetría de ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import docx2txt
-# Importación estándar y moderna:
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma
-
-try:
-	from langchain_openai import OpenAIEmbeddings
-except ImportError:  # pragma: no cover - dependencia opcional
-	OpenAIEmbeddings = None
-
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DOCTRINA_DIR = ROOT_DIR / "data" / "doctrina"
@@ -31,8 +25,7 @@ TAU_SIMILITUD = 0.75
 
 
 class HashEmbeddings(Embeddings):
-	"""Embeddings deterministas para desarrollo local sin servicios externos."""
-
+	"""Embeddings deterministas de respaldo si HuggingFace no está disponible."""
 	def __init__(self, dim: int = 256) -> None:
 		self.dim = dim
 
@@ -40,14 +33,12 @@ class HashEmbeddings(Embeddings):
 		vector = [0.0] * self.dim
 		if not text:
 			return vector
-
 		tokens = text.lower().split()
 		for token in tokens:
 			digest = sha256(token.encode("utf-8")).digest()
 			idx = int.from_bytes(digest[:4], "big") % self.dim
 			sign = 1.0 if digest[4] % 2 == 0 else -1.0
 			vector[idx] += sign
-
 		norm = math.sqrt(sum(v * v for v in vector))
 		if norm == 0:
 			return vector
@@ -68,22 +59,20 @@ class ResultadoRecuperacion:
 
 
 def get_embeddings() -> Embeddings:
-	"""
-	Entrega el modelo de embeddings.
-
-	Prioriza OpenAI cuando hay API key; en caso contrario usa embeddings locales
-	deterministas para mantener el pipeline funcional sin dependencias externas.
-	"""
-	openai_api_key = os.getenv("OPENAI_API_KEY")
-	if openai_api_key and OpenAIEmbeddings is not None:
-		return OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-
-	return HashEmbeddings()
+	"""Utiliza embeddings locales optimizados en CPU sin dependencias HTTP frágiles."""
+	try:
+		return HuggingFaceEmbeddings(
+			model_name="sentence-transformers/all-MiniLM-L6-v2",
+			model_kwargs={"device": "cpu"},
+			encode_kwargs={"batch_size": 64}
+		)
+	except Exception as e:
+		print(f"[RAG] Error cargando HuggingFaceEmbeddings: {e}")
+		return HashEmbeddings()
 
 
 def _extraer_texto_pdf(path_archivo: Path) -> str:
 	from pypdf import PdfReader
-
 	try:
 		reader = PdfReader(path_archivo)
 		texto = ""
@@ -97,7 +86,6 @@ def _extraer_texto_pdf(path_archivo: Path) -> str:
 
 def _extraer_texto_pptx(path_archivo: Path) -> str:
 	from pptx import Presentation
-
 	try:
 		prs = Presentation(path_archivo)
 		texto = ""
@@ -114,10 +102,8 @@ def _extraer_texto_pptx(path_archivo: Path) -> str:
 
 
 def cargar_documentos_docx(origen: Path = DOCTRINA_DIR) -> list[Document]:
-	"""Carga doctrina multiproposito desde DOCX, PDF y PowerPoint."""
 	if not origen.exists():
 		raise FileNotFoundError(f"No existe la carpeta de doctrina: {origen}")
-
 	documentos: list[Document] = []
 	extensiones_permitidas = {".docx", ".pdf", ".pptx", ".ppt"}
 	for ruta in sorted(p for p in origen.iterdir() if p.is_file() and p.suffix.lower() in extensiones_permitidas):
@@ -129,33 +115,23 @@ def cargar_documentos_docx(origen: Path = DOCTRINA_DIR) -> list[Document]:
 			texto = _extraer_texto_pdf(ruta)
 		elif sufijo in {".pptx", ".ppt"}:
 			texto = _extraer_texto_pptx(ruta)
-
 		if not texto or not texto.strip():
 			continue
-
 		documentos.append(
 			Document(
 				page_content=texto,
-				metadata={
-					"source": str(ruta),
-					"filename": ruta.name,
-				},
+				metadata={"source": str(ruta), "filename": ruta.name},
 			)
 		)
-
 	if not documentos:
-		raise ValueError(
-			f"No se encontraron documentos DOCX/PDF/PPTX/PPT con contenido en {origen}"
-		)
-
+		raise ValueError(f"No se encontraron documentos con contenido en {origen}")
 	return documentos
 
 
 def crear_segmentador() -> RecursiveCharacterTextSplitter:
-	"""Configura el segmentador solicitado para chunking de doctrina."""
 	return RecursiveCharacterTextSplitter(
-		chunk_size=500,
-		chunk_overlap=50,
+		chunk_size=2500,
+		chunk_overlap=250,
 		separators=["\n\n", "\n", ". ", " ", ""],
 	)
 
@@ -169,19 +145,45 @@ def construir_vector_store(
 	documentos: list[Document],
 	persist_directory: Path = VECTOR_STORE_DIR,
 	collection_name: str = COLLECTION_NAME,
+	progress_callback=None,
 ) -> Chroma:
-	"""Crea y persiste Chroma en data/vector_store a partir de los documentos."""
 	persist_directory.mkdir(parents=True, exist_ok=True)
-
 	embeddings = get_embeddings()
 	chunks = segmentar_documentos(documentos)
+	total_chunks = len(chunks)
 
-	vector_store = Chroma.from_documents(
-		documents=chunks,
-		embedding=embeddings,
-		collection_name=collection_name,
-		persist_directory=str(persist_directory),
-	)
+	msg_init = f"Iniciando vectorización masiva de {total_chunks} fragmentos..."
+	print(f"\n[RAG] {msg_init}")
+	if progress_callback:
+		progress_callback(0.0, msg_init)
+
+	# Fragmentado en lotes para no exceder el límite de variables SQLite de Chroma (max batch size 5461)
+	TAMANO_LOTE = 500
+	vector_store = None
+	total_lotes = math.ceil(total_chunks / TAMANO_LOTE)
+
+	for i in range(0, total_chunks, TAMANO_LOTE):
+		lote = chunks[i : i + TAMANO_LOTE]
+		lote_actual = (i // TAMANO_LOTE) + 1
+
+		if progress_callback:
+			progress_callback((lote_actual - 1) / total_lotes, f"Procesando lote {lote_actual} de {total_lotes}...")
+
+		if vector_store is None:
+			vector_store = Chroma.from_documents(
+				documents=lote,
+				embedding=embeddings,
+				collection_name=collection_name,
+				persist_directory=str(persist_directory),
+			)
+		else:
+			vector_store.add_documents(documents=lote)
+
+	msg_fin = "🎯 Vectorización completada con éxito."
+	print(f"[RAG] {msg_fin}\n")
+	if progress_callback:
+		progress_callback(1.0, msg_fin)
+
 	return vector_store
 
 
@@ -189,13 +191,8 @@ def cargar_vector_store(
 	persist_directory: Path = VECTOR_STORE_DIR,
 	collection_name: str = COLLECTION_NAME,
 ) -> Chroma:
-	"""Carga una colección existente de Chroma desde data/vector_store."""
 	if not persist_directory.exists():
-		raise FileNotFoundError(
-			f"No existe la carpeta del vector store: {persist_directory}. "
-			"Ejecute primero la ingestión."
-		)
-
+		raise FileNotFoundError(f"No existe la carpeta del vector store: {persist_directory}.")
 	return Chroma(
 		collection_name=collection_name,
 		embedding_function=get_embeddings(),
@@ -206,14 +203,11 @@ def cargar_vector_store(
 def _similitud_coseno(vec_a: list[float], vec_b: list[float]) -> float:
 	if not vec_a or not vec_b or len(vec_a) != len(vec_b):
 		return 0.0
-
 	producto = sum(a * b for a, b in zip(vec_a, vec_b))
 	norma_a = math.sqrt(sum(a * a for a in vec_a))
 	norma_b = math.sqrt(sum(b * b for b in vec_b))
-
 	if norma_a == 0 or norma_b == 0:
 		return 0.0
-
 	return producto / (norma_a * norma_b)
 
 
@@ -223,22 +217,15 @@ def recuperar_fragmentos_relevantes(
 	k: int = 4,
 	vector_store: Chroma | None = None,
 ) -> list[ResultadoRecuperacion]:
-	"""
-	Recupera fragmentos y valida similitud coseno >= tau antes de retornarlos.
-	"""
 	if not pregunta or not pregunta.strip():
 		raise ValueError("La pregunta no puede estar vacía.")
-
 	store = vector_store or cargar_vector_store()
 	embeddings = get_embeddings()
-
 	candidatos = store.similarity_search(query=pregunta, k=k)
 	if not candidatos:
 		return []
-
 	emb_pregunta = embeddings.embed_query(pregunta)
 	resultados: list[ResultadoRecuperacion] = []
-
 	for doc in candidatos:
 		emb_doc = embeddings.embed_query(doc.page_content)
 		similitud = _similitud_coseno(emb_pregunta, emb_doc)
@@ -250,12 +237,10 @@ def recuperar_fragmentos_relevantes(
 					metadata=doc.metadata,
 				)
 			)
-
 	resultados.sort(key=lambda item: item.similitud_coseno, reverse=True)
 	return resultados
 
 
 def ingest_arreglo_doctrina() -> Chroma:
-	"""Ingesta completa: carga doctrina multiproposito y persiste la base vectorial."""
 	documentos = cargar_documentos_docx()
 	return construir_vector_store(documentos=documentos)

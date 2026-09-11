@@ -5,6 +5,12 @@
 
 cd D:/MemoriaAcapomil; streamlit run frontend/app.py
 
+#####################################################
+###Cerrar proceso pegado (abrir en 2do PowerShell)###
+#####################################################
+
+Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+
 #################
 ###Cuentas Web###
 #################

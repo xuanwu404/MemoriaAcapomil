@@ -1802,7 +1802,7 @@ def _vista_diseno_evaluacion() -> None:
 
 
 
-def _reindexar_unidad(unidad_id: str) -> None:
+def _reindexar_unidad(unidad_id: str, progress_callback=None) -> None:
 	doc_dir = _data_unidad_dir(unidad_id)
 	vector_dir = _vector_unidad_dir(unidad_id)
 	doc_dir.mkdir(parents=True, exist_ok=True)
@@ -1821,6 +1821,7 @@ def _reindexar_unidad(unidad_id: str) -> None:
 		documentos=documentos,
 		persist_directory=vector_dir,
 		collection_name=f"acapomil_{unidad_id}",
+		progress_callback=progress_callback
 	)
 
 
@@ -1846,18 +1847,33 @@ def _vista_bibliografia() -> None:
 			key=f"upload_{unidad_id}",
 		)
 		if st.button("Guardar y vectorizar", use_container_width=True, type="primary"):
-			if not archivos:
-				st.warning("Selecciona al menos un documento DOCX, PDF, PPTX o PPT")
+			docs_existentes = [
+				p for p in doc_dir.iterdir() 
+				if p.is_file() and p.suffix.lower() in {".docx", ".pdf", ".pptx", ".ppt"}
+			]
+			
+			if not archivos and not docs_existentes:
+				st.warning("Selecciona al menos un documento o asegúrate de tener documentos previos en la unidad.")
 			else:
-				for archivo in archivos:
-					destino = doc_dir / archivo.name
-					destino.write_bytes(archivo.getvalue())
-				with st.spinner("Vectorizando bibliografia de la unidad activa..."):
-					try:
-						_reindexar_unidad(unidad_id)
-						st.success("Documentos guardados y vector store actualizado.")
-					except Exception as exc:
-						st.error(f"No se pudo vectorizar: {exc}")
+				# Si hay archivos nuevos en la zona de carga, los guardamos primero
+				if archivos:
+					for archivo in archivos:
+						destino = doc_dir / archivo.name
+						destino.write_bytes(archivo.getvalue())
+				
+				# Procedemos a vectorizar todo el contenido con feedback visual
+				barra_progreso = st.progress(0.0, text="Iniciando motor de vectorización...")
+
+				def actualizar_barra(porcentaje: float, mensaje: str):
+					p = max(0.0, min(1.0, porcentaje))
+					barra_progreso.progress(p, text=mensaje)
+
+				try:
+					_reindexar_unidad(unidad_id, progress_callback=actualizar_barra)
+					st.success("✅ Vector store actualizado exitosamente con los documentos de la unidad.")
+				except Exception as exc:
+					st.error(f"No se pudo vectorizar: {exc}")
+					barra_progreso.empty()
 
 	docs = sorted(
 		p

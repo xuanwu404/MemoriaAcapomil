@@ -24,7 +24,7 @@ from backend.pipeline_rag import (
 load_dotenv()
 
 
-DEFAULT_OLLAMA_MODEL = "gemma4:latest"
+DEFAULT_OLLAMA_MODEL = "llama3.1"
 DEFAULT_TAU = TAU_SIMILITUD
 
 
