@@ -66,7 +66,11 @@ from backend.orquestador import (
 	generar_plan_trabajo_cohorte,
 	generar_sugerencia_pregunta_cobertura,
 )
-from backend.pipeline_rag import cargar_documentos_docx, construir_vector_store
+from backend.pipeline_rag import (
+	cargar_documentos_docx,
+	construir_vector_store,
+	obtener_conteo_fragmentos_unidad,
+)
 
 
 DOCENTE_DEFAULT = "TCL Pablo Varas Briones"
@@ -1756,10 +1760,13 @@ def _vista_diseno_evaluacion() -> None:
 		indicadores_usados = set()
 		for fila in matriz:
 			for ind_str in fila["indicadores_asociados"]:
-				codigo = ind_str.split(" - ")[0].strip()
+				# Limpieza agresiva de caracteres invisibles y espacios
+				codigo = ind_str.split(" - ")[0].strip().upper()
+				codigo = "".join(codigo.split())
 				indicadores_usados.add(codigo)
 
-		codigos_totales = set([r["codigo"] for r in indicadores_db])
+		# Limpiamos también la base de datos para la comparación perfecta
+		codigos_totales = set(["".join(str(r["codigo"]).strip().upper().split()) for r in indicadores_db])
 		faltantes = codigos_totales - indicadores_usados
 
 		if faltantes:
@@ -1911,6 +1918,17 @@ def _vista_bibliografia() -> None:
 				if st.button("Eliminar vector store de la unidad", use_container_width=True):
 					shutil.rmtree(_vector_unidad_dir(unidad_id), ignore_errors=True)
 					st.warning("Vector store eliminado para la unidad activa.")
+
+		# --- Telemetría de la Base Vectorial Activa ---
+		total_chunks = obtener_conteo_fragmentos_unidad(unidad_id)
+		st.divider()
+		if total_chunks > 0:
+			st.success(
+				f"🧠 **Base Vectorial Activa:** Se encuentran indexados **{total_chunks} fragmentos doctrinales** "
+				f"(Embeddings multilingües) listos para asistencia RAG en esta unidad."
+			)
+		else:
+			st.info("ℹ️ **Estado Vectorial:** Aún no se ha generado el índice vectorial para esta unidad.")
 
 
 def _alumnos_unidad(unidad_id: str) -> list[dict[str, Any]]:
@@ -2152,7 +2170,9 @@ def _vista_trazabilidad() -> None:
 
 	for patron, grupo_alumnos in mapa_patrones.items():
 		nombres = [a["nombre"] for a in grupo_alumnos]
-		st.markdown(f"**Grupo con brechas en: {', '.join(patron)}** ({len(nombres)} alumnos)")
+		cant = len(nombres)
+		sufijo = "alumno" if cant == 1 else "alumnos"
+		st.markdown(f"**Grupo con brechas en: {', '.join(patron)}** ({cant} {sufijo})")
 		st.caption(", ".join(nombres))
 
 	st.markdown("#### ⚙️ Motor de Generación Masiva")
@@ -2230,7 +2250,7 @@ def _vista_trazabilidad() -> None:
 
 		for idx, plan in enumerate(st.session_state.vista_planes):
 			with st.expander(f"Plan {idx+1}: {', '.join(plan['alumnos'])} (Brechas: {', '.join(plan['patron'])})"):
-				st.markdown(plan["contenido"])
+				st.markdown(plan["contenido"], unsafe_allow_html=True)
 
 
 def _vista_reportes() -> None:

@@ -21,7 +21,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DOCTRINA_DIR = ROOT_DIR / "data" / "doctrina"
 VECTOR_STORE_DIR = ROOT_DIR / "data" / "vector_store"
 COLLECTION_NAME = "acapomil_doctrina"
-TAU_SIMILITUD = 0.75
+TAU_SIMILITUD = 0.60  # Umbral táctico ajustado para doctrina en español
 
 
 class HashEmbeddings(Embeddings):
@@ -59,10 +59,11 @@ class ResultadoRecuperacion:
 
 
 def get_embeddings() -> Embeddings:
-	"""Utiliza embeddings locales optimizados en CPU sin dependencias HTTP frágiles."""
+	"""Utiliza embeddings locales multilingües optimizados en CPU."""
 	try:
 		return HuggingFaceEmbeddings(
-			model_name="sentence-transformers/all-MiniLM-L6-v2",
+			# Modelo optimizado para comprender semántica en Español
+			model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 			model_kwargs={"device": "cpu"},
 			encode_kwargs={"batch_size": 64}
 		)
@@ -209,6 +210,20 @@ def _similitud_coseno(vec_a: list[float], vec_b: list[float]) -> float:
 	if norma_a == 0 or norma_b == 0:
 		return 0.0
 	return producto / (norma_a * norma_b)
+
+
+def obtener_conteo_fragmentos_unidad(unidad_id: str) -> int:
+	"""Consulta cuántos fragmentos vectoriales existen persistidos para la unidad."""
+	vector_dir = VECTOR_STORE_DIR / str(unidad_id)
+	col_name = f"acapomil_{unidad_id}"
+	if not vector_dir.exists():
+		return 0
+	try:
+		store = cargar_vector_store(persist_directory=vector_dir, collection_name=col_name)
+		datos = store.get()
+		return len(datos.get("ids", []))
+	except Exception:
+		return 0
 
 
 def recuperar_fragmentos_relevantes(
