@@ -2,21 +2,24 @@
 
 **Academia Politécnica Militar (ACAPOMIL) - Ejército de Chile**
 
-Diseño preliminar de un sistema RAG (Generación Aumentada por Recuperación) para la automatización del análisis pedagógico y la formulación de planes de refuerzo técnico.
+Plataforma de prueba de concepto (PoC) diseñada para la automatización del razonamiento pedagógico y la formulación de planes de reforzamiento académico. El sistema emplea una arquitectura de Generación Aumentada por Recuperación (RAG) para procesar resultados de evaluaciones y emitir directrices técnicas basadas estrictamente en la doctrina militar e ingeniería de software cargada en el sistema.
 
 ## ⚙️ Arquitectura del Sistema
-El sistema opera bajo un patrón modular segregado para garantizar el aislamiento de procesos y la soberanía de los datos:
-* **Presentación (Frontend):** Interfaz desarrollada en Streamlit (`frontend/app.py`) para el renderizado de telemetría académica, carga de doctrina y visualización de planes de trabajo.
-* **Orquestación y LLM:** Lógica de control estructurada sobre LangChain. Soporta inferencia local aisalda mediante Ollama (modelo `llama3.1`) o procesamiento externo vía API de OpenAI.
-* **Motor de Embeddings:** Procesamiento vectorial local mediante `sentence-transformers` en CPU, empleando el modelo `paraphrase-multilingual-MiniLM-L12-v2` optimizado para la semántica en español[cite: 240].
-* **Persistencia Vectorial:** Almacén ChromaDB configurado para la indexación y recuperación de doctrina militar desde archivos PDF, DOCX y PPTX, con particionamiento lógico por unidad académica[cite: 240].
-* **Persistencia Relacional:** Base de datos SQLite (`acapomil.db`) encargada del control de cuentas, unidades, matrícula de alumnos y matriz de trazabilidad de puntajes.
 
-## 🛠️ Requisitos de Entorno
+El diseño lógico implementa un patrón de segregación de responsabilidades optimizado para cargas de trabajo de Inteligencia Artificial:
+
+* **Capa de Presentación (Frontend):** Interfaz desarrollada en Streamlit (`frontend/app.py`). Gestiona el control de acceso, renderizado de telemetría académica, carga de doctrina y visualización estructurada de planes de trabajo.
+* **Capa de Orquestación y LLM:** Construida sobre LangChain (`backend/orquestador.py`). Implementa un enrutamiento dual que soporta inferencia *On-Premise* aislada mediante Ollama (modelo `llama3.1`) para operaciones críticas sin conexión, o procesamiento en la nube vía API de OpenAI (`gpt-4o-mini`) para escalabilidad[cite: 239].
+* **Motor de Embeddings:** Procesamiento vectorial local mediante la librería `sentence-transformers` en CPU. Utiliza el modelo `paraphrase-multilingual-MiniLM-L12-v2`, seleccionado por su alto rendimiento en similitud semántica para textos técnicos en español[cite: 240].
+* **Persistencia Vectorial:** Almacén multidimensional ChromaDB (`data/vector_store/`). Encargado de la indexación y recuperación rápida de fragmentos de doctrina desde archivos PDF, DOCX y PPTX. Emplea métricas de similitud coseno con un umbral estricto (Tau = 0.60) para mitigar alucinaciones[cite: 240].
+* **Persistencia Relacional:** Base de datos SQLite (`data/acapomil.db`). Estructura el modelo de dominio relacional: control de cuentas (RBAC), registro de unidades, matrícula de alumnos y matriz de trazabilidad de puntajes.
+
+## 🛠️ Requisitos del Entorno
+
 * Python 3.10 o superior.
 * Entorno virtual (`venv`).
-* [Ollama](https://ollama.ai/) instalado y modelo `llama3.1` descargado localmente (para ejecución *On-Premise*).
-* Git para control de versiones.
+* [Ollama](https://ollama.ai/) instalado y en ejecución local con el modelo `llama3.1` (requerido para inferencia *On-Premise*).
+* Git.
 
 ## 🚀 Guía de Despliegue Operacional
 
