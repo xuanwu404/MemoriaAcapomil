@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 import os
+import time
 
 import numpy as np
 if not hasattr(np, "float_"):
@@ -75,10 +76,8 @@ def _crear_llm():
 def _asegurar_retrieval_disponible() -> None:
 	"""Crea el vector store si aun no existe para no romper la cadena."""
 	try:
-		# Xuanwu: esta llamada falla si no hay vector store persistido.
 		recuperar_fragmentos_relevantes("test de disponibilidad", k=1)
 	except FileNotFoundError:
-		# Xuanwu: auto-ingesta para mantener experiencia MVP sin pasos manuales.
 		ingest_arreglo_doctrina()
 
 
@@ -166,7 +165,6 @@ def _armar_entrada_llm(payload: dict[str, Any]) -> dict[str, Any]:
 			resumen = obtener_brechas_alumno(nombre_alumno)
 			indicadores = resumen.get("indicadores_brecha", [])
 
-	# EXTRAER DESCRIPCIONES REALES DESDE LA BASE DE DATOS
 	descripciones_temas = []
 	if unidad_id:
 		try:
@@ -248,8 +246,13 @@ def generar_plan_trabajo_alumno(
 ) -> dict[str, Any]:
 	"""
 	Ejecuta la cadena y retorna plan junto con metadatos de auditoria basicos.
+	Mide latencia y guarda en telemetria_rendimiento.txt.
 	"""
 	chain = construir_cadena_plan_4_semanas(colectivo=False)
+	
+	motor_actual = os.getenv("LLM_PROVIDER", "ollama").strip().upper()
+	tiempo_inicio = time.time()
+
 	plan = chain.invoke(
 		{
 			"nombre_alumno": nombre_alumno,
@@ -258,6 +261,10 @@ def generar_plan_trabajo_alumno(
 			"modo_cohorte": False,
 		}
 	)
+
+	latencia = time.time() - tiempo_inicio
+	with open("telemetria_rendimiento.txt", "a") as log:
+		log.write(f"Motor: {motor_actual} | Modo: INDIVIDUAL | Latencia: {latencia:.2f} segundos\n")
 
 	if brechas_forzadas is not None:
 		brechas = {
@@ -287,12 +294,19 @@ def generar_plan_trabajo_cohorte(
 	tau: float = DEFAULT_TAU,
 	unidad_id: str = None,
 ) -> dict[str, Any]:
-	"""Genera un plan colectivo por cohorte manteniendo el mismo formato de salida y conectando el RAG."""
+	"""
+	Genera un plan colectivo por cohorte manteniendo el mismo formato de salida y conectando el RAG.
+	Mide latencia y guarda en telemetria_rendimiento.txt.
+	"""
 	grupo_limpio = [str(item).strip() for item in alumnos_grupo if str(item).strip()]
 	if not grupo_limpio:
 		raise ValueError("Debe indicar al menos un alumno en alumnos_grupo.")
 
 	chain = construir_cadena_plan_4_semanas(colectivo=True)
+	
+	motor_actual = os.getenv("LLM_PROVIDER", "ollama").strip().upper()
+	tiempo_inicio = time.time()
+
 	plan = chain.invoke(
 		{
 			"nombre_alumno": ", ".join(grupo_limpio),
@@ -303,6 +317,10 @@ def generar_plan_trabajo_cohorte(
 			"unidad_id": unidad_id,
 		}
 	)
+
+	latencia = time.time() - tiempo_inicio
+	with open("telemetria_rendimiento.txt", "a") as log:
+		log.write(f"Motor: {motor_actual} | Modo: COHORTE | Latencia: {latencia:.2f} segundos\n")
 
 	if brechas_forzadas is not None:
 		brechas = {

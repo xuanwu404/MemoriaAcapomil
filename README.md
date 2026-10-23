@@ -37,7 +37,7 @@ Ejecutar los siguientes comandos en la terminal para inicializar el entorno aisl
 
     ```Bash
     python -m venv venv
-    .\venv\Scripts\activate     # Entorno Windows
+    .\venv\Scripts\activate
 
 3. Instalar dependencias
 Instalar el ecosistema RAG y librerías de procesamiento de datos:
@@ -52,7 +52,7 @@ Crear el archivo .env en el directorio raíz para definir los parámetros de con
     OPENAI_API_KEY=tu_api_key_aqui_si_usas_cloud
     LLM_PROVIDER=ollama
     OPENAI_MODEL=gpt-4o-mini
-    
+
 5. Ejecución del sistema
 Inicializar el servidor local:
 
