@@ -19,3 +19,5 @@ data/doctrina/
 # Archivos de sistema / temporales
 .DS_Store
 Thumbs.db
+
+.github/
